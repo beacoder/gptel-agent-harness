@@ -33,6 +33,18 @@
 
 ;;;; Context Compaction
 
+(defvar gptel-agent-harness-compact-prompt-file)
+
+(defun gptel-agent-harness--read-compact-prompt ()
+  "Read the compact prompt from `gptel-agent-harness-compact-prompt-file'."
+  (if (file-exists-p gptel-agent-harness-compact-prompt-file)
+      (with-temp-buffer
+        (insert-file-contents gptel-agent-harness-compact-prompt-file)
+        (buffer-string))
+    (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
+
+(declare-function gptel-agent-harness-cache--reset-epoch "gptel-agent-harness-cache")
+
 (defun gptel-agent-harness-commands--compact-callback (resp info)
   "Callback for `gptel-agent-harness-commands-compact'.
 
@@ -61,6 +73,8 @@ reports the error.  INFO is the request info plist."
         (gptel--update-status " Ready" 'success)))
      ;; Reasoning block — ignore, wait for text
      ((and (consp resp) (eq (car resp) 'reasoning)) nil)
+     ;; End-of-stream marker — ignore
+     ((eq resp t) nil)
      ;; Abort
      ((eq resp 'abort)
       (with-current-buffer buf
@@ -74,10 +88,29 @@ reports the error.  INFO is the request info plist."
         (gptel--update-status " Error: Compaction failed" 'error))
       (message "Compaction failed: unexpected response type %S" (type-of resp))))))
 
-(declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
-(declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
-(declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness")
-(declare-function gptel-agent-harness-cache--reset-epoch "gptel-agent-harness-cache")
+(defun gptel-agent-harness--strip-compact-prefix ()
+  "Strip the header and separator from current buffer, keeping the summary.
+If a previous compaction frame exists (header + summary + separator),
+remove the header and separator, leaving the old summary as plain text
+followed by the new conversation content.
+
+Must be called with point in the buffer to compact."
+  (save-excursion
+    (goto-char (point-min))
+    (when (search-forward gptel-agent-harness-compact-header nil t)
+      ;; Remove the header (already matched, point is after it).
+      (delete-region (point-min) (point))
+      ;; Find and remove the separator.
+      (when (search-forward gptel-agent-harness-compact-separator nil t)
+        (replace-match "\n\n" t t)))))
+
+(defun gptel-agent-harness--insert-compact-frame ()
+  "Insert the compact header at buffer start and separator at buffer end.
+Call this after the LLM has written its summary into the buffer."
+  (goto-char (point-min))
+  (insert gptel-agent-harness-compact-header)
+  (goto-char (point-max))
+  (insert gptel-agent-harness-compact-separator))
 
 (defun gptel-agent-harness-commands-compact (&optional post-func)
   "Compact the current buffer contents using the LLM.
@@ -176,32 +209,31 @@ without waiting for the automatic trigger."
                             (error "Failed to find gptel-agent-harness"))))
   "File path for the conversation summary prompt.")
 
+(defun gptel-agent-harness-commands--read-prompt-file (file description)
+  "Read and return the prompt FILE contents.
+DESCRIPTION is used in error messages."
+  (if (file-exists-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (buffer-string))
+    (error "%s prompt file not found: %s" description file)))
+
+;; Removed duplicate function definition - the first definition with 'description' parameter is sufficient
+
 (defun gptel-agent-harness-commands--read-initialize-prompt ()
   "Read and return the initialize prompt file contents."
-  (if (file-exists-p gptel-agent-harness-commands--initialize-prompt-file)
-      (with-temp-buffer
-        (insert-file-contents gptel-agent-harness-commands--initialize-prompt-file)
-        (buffer-string))
-    (error "Initialize prompt file not found: %s"
-           gptel-agent-harness-commands--initialize-prompt-file)))
+  (gptel-agent-harness-commands--read-prompt-file
+   gptel-agent-harness-commands--initialize-prompt-file "Initialize"))
 
 (defun gptel-agent-harness-commands--read-review-prompt ()
   "Read and return the review prompt file contents."
-  (if (file-exists-p gptel-agent-harness-commands--review-prompt-file)
-      (with-temp-buffer
-        (insert-file-contents gptel-agent-harness-commands--review-prompt-file)
-        (buffer-string))
-    (error "Review prompt file not found: %s"
-           gptel-agent-harness-commands--review-prompt-file)))
+  (gptel-agent-harness-commands--read-prompt-file
+   gptel-agent-harness-commands--review-prompt-file "Review"))
 
 (defun gptel-agent-harness-commands--read-summary-prompt ()
   "Read and return the summary prompt file contents."
-  (if (file-exists-p gptel-agent-harness-commands--summary-prompt-file)
-      (with-temp-buffer
-        (insert-file-contents gptel-agent-harness-commands--summary-prompt-file)
-        (buffer-string))
-    (error "Summary prompt file not found: %s"
-           gptel-agent-harness-commands--summary-prompt-file)))
+  (gptel-agent-harness-commands--read-prompt-file
+   gptel-agent-harness-commands--summary-prompt-file "Summary"))
 
 (defun gptel-agent-harness-commands--substitute-placeholders (template project-dir extra)
   "Substitute ${path} and $ARGUMENTS in TEMPLATE with PROJECT-DIR and EXTRA."
@@ -259,10 +291,7 @@ user is prompted to provide extra instructions."
       ;; Enable tools for this buffer
       (setq-local gptel-use-tools t)
       (setq-local gptel-tools
-                  (flatten-list
-                   (mapcar #'gptel-get-tool
-                           '("TodoWrite" "Glob" "Grep" "Read" "Insert"
-                             "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
+                  (mapcar #'gptel-get-tool gptel-agent-harness--default-tools))
       (gptel-agent-harness--setup-session)
       (gptel--update-status " Initializing..." 'warning)
       (goto-char (point-max))
@@ -303,10 +332,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
       (gptel-agent-update)
       (setq-local gptel-use-tools t)
       (setq-local gptel-tools
-                  (flatten-list
-                   (mapcar #'gptel-get-tool
-                           '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert"
-                             "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
+                  (mapcar #'gptel-get-tool gptel-agent-harness--default-tools))
       (gptel-agent-harness--setup-session)
       (gptel--update-status " Reviewing..." 'warning)
       (goto-char (point-max))
