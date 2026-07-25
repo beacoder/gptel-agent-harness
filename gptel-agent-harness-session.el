@@ -228,7 +228,6 @@ Intended as a hook function for `gptel-post-response-functions'."
                                  (when (and (boundp 'gptel-backend) gptel-backend)
                                    (gptel-backend-name gptel-backend))))
                (vars `(("gptel-agent-harness--project-dir" . ,proj-dir)
-                       ("gptel--bounds"                    . ,(gptel--get-buffer-bounds))
                        ("gptel-model"                      . ,gptel-model)
                        ("gptel--backend-name"              . ,backend-name)
                        ("gptel--preset"                    . ,gptel--preset)
@@ -423,8 +422,6 @@ This opens the file, enables `gptel-mode', and restores all state."
     (gptel-mode 1)
     ;; gptel-mode's built-in restore only fires for file-visiting buffers.
     ;; Since session buffers are not file-visiting, manually restore state.
-    (when gptel--bounds
-      (gptel--restore-props gptel--bounds))
     (when gptel--preset
       (when (gptel-get-preset gptel--preset)
         (gptel--apply-preset
