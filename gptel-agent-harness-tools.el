@@ -50,9 +50,14 @@
 (defvar gptel-agent-harness-tools--orig-grep nil
   "Original `gptel-agent--grep' function, saved before override.")
 
+(defvar gptel-agent-harness--default-tools
+  '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert" "Edit" "Write" "Mkdir" "Bash" "Skill" "Question")
+  "Default tool names for `gptel-agent-harness-commands-initialize' and `-review'.")
+
 ;;;; Glob Tool — git ls-files with tree fallback
 
 (defun gptel-agent-harness-tools--glob (pattern &optional path depth)
+
   "Find files matching PATTERN using `git ls-files' or `tree'.
 
 Inside a git repository, uses `git ls-files' which is significantly
