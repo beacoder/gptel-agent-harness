@@ -230,6 +230,83 @@ Uses:
     (round (+ (/ (float (- len cjk-count)) 4.0)
               (/ (float cjk-count) 2.0)))))
 
+
+(defun gptel-agent-harness--extract-system-content (system)
+  "Insert SYSTEM prompt text into current buffer.
+Handles string, plist with :parts, vector, and list forms."
+  (cond
+   ((stringp system) (insert system))
+   ((and (listp system) (plist-get system :parts))
+    (let ((parts (plist-get system :parts)))
+      (cl-loop for part across (if (vectorp parts) parts (vconcat parts))
+               do (insert (or (plist-get part :text) (format "%S" part)) "\n"))))
+   ((vectorp system)
+    (cl-loop for part across system
+             do (insert (or (plist-get part :text) (format "%S" part)) "\n")))
+   ((listp system)
+    (dolist (s system)
+      (insert (or (and (stringp s) s)
+                  (plist-get s :text)
+                  (format "%s" s))
+              "\n")))))
+
+(defun gptel-agent-harness--extract-content-openai (content)
+  "Insert OpenAI-style string CONTENT into current buffer."
+  (insert content))
+
+(defun gptel-agent-harness--extract-content-gemini (content)
+  "Insert Gemini-style vector CONTENT into current buffer.
+Iterates over parts, extracting :thinking and :text fields."
+  (cl-loop for part across content
+           do (insert (or (and (stringp part) part)
+                          (and (stringp (plist-get part :thinking))
+                               (plist-get part :thinking))
+                          (and (stringp (plist-get part :text))
+                               (plist-get part :text))
+                          (format "%S" part)))))
+
+(defun gptel-agent-harness--extract-content-anthropic (content)
+  "Insert Anthropic-style list CONTENT into current buffer.
+Handles :thinking, :text, and :arguments blocks."
+  (dolist (part content)
+    (cond
+     ((stringp part) (insert part))
+     ((and (plist-get part :thinking)
+           (stringp (plist-get part :thinking)))
+      (insert (plist-get part :thinking)))
+     ((and (plist-get part :text)
+           (stringp (plist-get part :text)))
+      (insert (plist-get part :text)))
+     ((and (plist-get part :arguments)
+           (stringp (plist-get part :arguments)))
+      (insert (plist-get part :arguments)))
+     (t (insert (format "%S" part))))))
+
+(defun gptel-agent-harness--extract-content (content)
+  "Dispatch CONTENT insertion based on its type.
+Delegates to OpenAI, Gemini, or Anthropic-specific extractors."
+  (cond
+   ((stringp content)
+    (gptel-agent-harness--extract-content-openai content))
+   ((vectorp content)
+    (gptel-agent-harness--extract-content-gemini content))
+   ((listp content)
+    (gptel-agent-harness--extract-content-anthropic content))
+   (t (insert (format "%S" content)))))
+
+(defun gptel-agent-harness--extract-tool-calls (tool-calls)
+  "Insert TOOL-CALLS names and arguments into current buffer.
+Handles both vector and list representations."
+  (dolist (tc (if (vectorp tool-calls)
+                  (append tool-calls nil)
+                tool-calls))
+    (let ((func (plist-get tc :function)))
+      (when func
+        (let ((name (plist-get func :name))
+              (args (plist-get func :arguments)))
+          (when name (insert name "\n"))
+          (when args (insert args "\n")))))))
+
 (defun gptel-agent-harness--context-tokens-from-data (fsm)
   "Estimate tokens from the full prompt payload of FSM.
 Includes system prompt, all user/assistant/tool messages, and
@@ -239,12 +316,12 @@ serialized content to *gptel-agent-harness-debug*."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
          (messages (or (plist-get data :messages)
-                       (plist-get data :input)      ; OpenAI Responses API
-                       (plist-get data :contents))) ; Gemini
+                       (plist-get data :input)
+                       (plist-get data :contents)))
          (system (or (plist-get data :system)
                      (plist-get data :system_instruction)
-                     (plist-get data :instructions)    ; OpenAI Responses API
-                     (plist-get data :systemInstruction) ; Gemini
+                     (plist-get data :instructions)
+                     (plist-get data :systemInstruction)
                      ""))
          (total 0)
          (debug-buf (when gptel-agent-harness-verbose
@@ -254,91 +331,33 @@ serialized content to *gptel-agent-harness-debug*."
         (erase-buffer)
         (insert "=== Context Token Estimation ===\n\n")))
     (with-temp-buffer
-      ;; System prompt
-      (cond
-       ((stringp system) (insert system))
-       ;; Gemini: (:parts [(:text "...")])
-       ((and (listp system) (plist-get system :parts))
-        (let ((parts (plist-get system :parts)))
-          (cl-loop for part across (if (vectorp parts) parts (vconcat parts))
-                   do (insert (or (plist-get part :text) (format "%S" part)) "\n"))))
-       ;; Bedrock/Anthropic: [(:text "...")] — vector of text parts
-       ((vectorp system)
-        (cl-loop for part across system
-                 do (insert (or (plist-get part :text) (format "%S" part)) "\n")))
-       ((listp system)
-        (dolist (s system)
-          (insert (or (and (stringp s) s)
-                      (plist-get s :text)
-                      (format "%s" s))
-                  "\n"))))
+      (gptel-agent-harness--extract-system-content system)
       (setq total (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
       (when debug-buf
         (let ((text (buffer-string)))
           (with-current-buffer debug-buf
             (insert "--- [system] ---\n" text "\n\n"))))
-      ;; All messages
       (when messages
         (cl-loop
          for msg across messages
          for role = (plist-get msg :role)
          for content = (or (plist-get msg :content)
-                           ;; Gemini uses :parts [(:text "...") ...]
                            (plist-get msg :parts))
          for reasoning = (plist-get msg :reasoning_content)
          for tool-calls = (plist-get msg :tool_calls)
          do (erase-buffer)
-         ;; Reasoning/thinking content (DeepSeek :reasoning_content field)
          (when (stringp reasoning)
            (insert reasoning "\n"))
-         (cond
-          ((stringp content)
-           (insert content))
-          ((vectorp content)
-           ;; Gemini :parts is a vector of (:text "...") plists
-           (cl-loop for part across content
-                    do (insert (or (and (stringp part) part)
-                                   (and (stringp (plist-get part :thinking))
-                                        (plist-get part :thinking))
-                                   (and (stringp (plist-get part :text))
-                                        (plist-get part :text))
-                                   (format "%S" part)))))
-          ((listp content)
-           (dolist (part content)
-             (cond
-              ((stringp part) (insert part))
-              ;; Thinking blocks (Claude extended thinking)
-              ((and (plist-get part :thinking)
-                    (stringp (plist-get part :thinking)))
-               (insert (plist-get part :thinking)))
-              ((and (plist-get part :text)
-                    (stringp (plist-get part :text)))
-               (insert (plist-get part :text)))
-              ((and (plist-get part :arguments)
-                    (stringp (plist-get part :arguments)))
-               (insert (plist-get part :arguments)))
-              (t (insert (format "%S" part))))))
-          (t (insert (format "%S" content))))
-         ;; Tool calls (assistant messages with function invocations)
+         (gptel-agent-harness--extract-content content)
          (when tool-calls
-           (dolist (tc (if (vectorp tool-calls)
-                           (append tool-calls nil)
-                         tool-calls))
-             (let ((func (plist-get tc :function)))
-               (when func
-                 (let ((name (plist-get func :name))
-                       (args (plist-get func :arguments)))
-                   (when name (insert name "\n"))
-                   (when args (insert args "\n")))))))
+           (gptel-agent-harness--extract-tool-calls tool-calls))
          (cl-incf total
                   (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
          (when debug-buf
            (let ((text (buffer-string)))
              (with-current-buffer debug-buf
                (insert (format "--- [%s] ---\n%s\n\n" role text)))))))
-      ;; Tool definitions (schemas sent with the request)
       (when-let* ((tools (or (plist-get data :tools)
-                             ;; Bedrock nests tools under :toolConfig
                              (plist-get (plist-get data :toolConfig) :tools))))
         (erase-buffer)
         (insert (format "%S" tools))
@@ -555,58 +574,91 @@ Also stores the raw (uncalibrated) estimate for calibration."
         (setq gptel-agent-harness--last-raw-estimate raw-estimate)
         (force-mode-line-update)))))
 
+
+;;;; Extracted transition handlers
+
+(defun gptel-agent-harness--handle-wait-state (orig-fn machine new-state)
+  "Handle WAIT state transition for MACHINE.
+
+Checks context usage ratio and triggers compaction when the
+threshold is exceeded.  Returns non-nil if compaction was started,
+meaning the caller should skip its own transition, and nil otherwise.
+
+ORIG-FN is the original `gptel--fsm-transition' function.
+MACHINE is the FSM machine state.
+NEW-STATE is the state to transition to."
+  (condition-case err
+      (gptel-agent-harness--update-context-ratio machine)
+    (error
+     (when gptel-agent-harness-verbose
+       (message "gptel-agent-harness: context ratio error (WAIT) — %s"
+                (error-message-string err)))))
+  (if (gptel-agent-harness--need-compaction-p machine)
+      ;; `gptel-abort' inside --compact removes FSM from
+      ;; `gptel--request-alist' and transitions it to ABRT, so
+      ;; skip the normal transition when compaction starts.
+      (unless (gptel-agent-harness--compact machine)
+        (funcall orig-fn machine new-state))
+    (funcall orig-fn machine new-state)))
+
+(defun gptel-agent-harness--handle-terminal-state (orig-fn machine new-state)
+  "Handle terminal (DONE/ERRS) state transition for MACHINE.
+
+Either nudges the LLM to keep going (redirecting to WAIT) or lets
+the FSM terminate.  When compaction is in progress, always lets the
+FSM terminate without interference.
+
+ORIG-FN is the original `gptel--fsm-transition' function.
+MACHINE is the FSM machine state.
+NEW-STATE is the state to transition to."
+  (condition-case err
+      (gptel-agent-harness--update-context-ratio machine)
+    (error
+     (when gptel-agent-harness-verbose
+       (message "gptel-agent-harness: context ratio error (terminal) — %s"
+                (error-message-string err)))))
+  ;; If compaction is in progress, let the FSM terminate without
+  ;; interference — don't clear the flag or nudge.  The aborted
+  ;; FSM must die quietly while compaction handles the resume.
+  (if (gptel-agent-harness--with-fsm-buffer machine
+        gptel-agent-harness--compacting-p)
+      (funcall orig-fn machine new-state)
+    (if (and (gptel-agent-harness--agentic-p machine)
+             (gptel-agent-harness--top-level-p machine)
+             (gptel-agent-harness--can-nudge-p machine))
+        (progn
+          (gptel-agent-harness--nudge machine)
+          (funcall orig-fn machine 'WAIT))
+      (funcall orig-fn machine new-state))))
+
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
   "Around advice for `gptel--fsm-transition'.
 
-Intercepts terminal states and redirects to WAIT with a nudge.
+Delegates to `gptel-agent-harness--handle-wait-state' and
+`gptel-agent-harness--handle-terminal-state' to keep nesting
+shallow.
+
 Resets counter when LLM makes tool calls.
 
 ORIG-FN is the original `gptel--fsm-transition' function.
 MACHINE is the FSM machine state.
 NEW-STATE is the optional new state to transition to."
   (let ((target (or new-state (gptel--fsm-next machine))))
-    (cond
-     ;; Before next LLM turn — check if compaction needed
-     ((eq target 'WAIT)
-      (condition-case err
-          (gptel-agent-harness--update-context-ratio machine)
-        (error
-         (when gptel-agent-harness-verbose
-           (message "gptel-agent-harness: context ratio error (WAIT) — %s"
-                    (error-message-string err)))))
-      (if (gptel-agent-harness--need-compaction-p machine)
-          ;; If compact bails out, fall through to normal transition
-          (unless (gptel-agent-harness--compact machine)
-            (funcall orig-fn machine new-state))
-        (funcall orig-fn machine new-state)))
-     ;; LLM attempts to finish
-     ((gptel-agent-harness--terminal-p target)
-      (condition-case err
-          (gptel-agent-harness--update-context-ratio machine)
-        (error
-         (when gptel-agent-harness-verbose
-           (message "gptel-agent-harness: context ratio error (terminal) — %s"
-                    (error-message-string err)))))
-      ;; If compaction is in progress, let the FSM terminate without
-      ;; interference — don't clear the flag or nudge.  The aborted
-      ;; FSM must die quietly while compaction handles the resume.
-      (if (gptel-agent-harness--with-fsm-buffer machine
-            gptel-agent-harness--compacting-p)
-          (funcall orig-fn machine new-state)
-        (if (and (gptel-agent-harness--agentic-p machine)
-                 (gptel-agent-harness--top-level-p machine)
-                 (gptel-agent-harness--can-nudge-p machine))
-            (progn
-              (gptel-agent-harness--nudge machine)
-              (funcall orig-fn machine 'WAIT))
-          (funcall orig-fn machine new-state))))
-     ;; Tool execution means real progress
-     ((and (memq target '(TOOL TPRE))
-           (gptel-agent-harness--top-level-p machine))
-      (funcall orig-fn machine new-state)
-      (gptel-agent-harness--reset-nudges machine))
-     ;; Everything else
-     (t (funcall orig-fn machine new-state)))))
+    (pcase target
+      ;; Before next LLM turn — check if compaction needed
+      ('WAIT
+       (gptel-agent-harness--handle-wait-state orig-fn machine new-state))
+      ;; LLM attempts to finish — possibly nudge instead
+      ((guard (gptel-agent-harness--terminal-p target))
+       (gptel-agent-harness--handle-terminal-state orig-fn machine new-state))
+      ;; Tool execution means real progress
+      ((or 'TOOL 'TPRE)
+       (funcall orig-fn machine new-state)
+       (when (gptel-agent-harness--top-level-p machine)
+         (gptel-agent-harness--reset-nudges machine)))
+      ;; Everything else
+      (_
+       (funcall orig-fn machine new-state)))))
 
 ;;;; Mode-line Context Ratio Display
 
