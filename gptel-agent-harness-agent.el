@@ -93,7 +93,8 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
                (gptel-buf
                 (gptel (generate-new-buffer-name
                         (format ,(format "*%s:%%s*" agent-name)
-                                (cadr (nreverse (file-name-split project-dir)))))
+                                (file-name-nondirectory
+                                 (directory-file-name project-dir))))
                        nil
                        (and (use-region-p)
                             (buffer-substring (region-beginning) (region-end)))
@@ -115,13 +116,15 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
 
 (defun gptel-agent-harness-agent--register-preset (&rest _)
   "Register presets for all harness-defined agents after definitions are loaded.
-Intended as :after advice on `gptel-agent-update'."
+Intended as :after advice on `gptel-agent-update'.
+Only registers presets that haven't been registered yet."
   (dolist (entry gptel-agent-harness-agent--defined-agents)
     (let ((func-name (car entry))
           (agent-name (cdr entry)))
       (when-let* ((gptel-agent-plist
                    (assoc-default agent-name gptel-agent--agents nil nil)))
-        (apply #'gptel-make-preset func-name gptel-agent-plist)))))
+        (unless (assoc func-name gptel--known-presets)
+          (apply #'gptel-make-preset func-name gptel-agent-plist))))))
 
 ;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
 
