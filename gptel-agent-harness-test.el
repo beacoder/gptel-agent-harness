@@ -69,8 +69,6 @@
     (fset 'gptel-mode
           (lambda (&optional arg)
             (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t))))))
-  (unless (fboundp 'gptel--get-buffer-bounds)
-    (fset 'gptel--get-buffer-bounds (lambda () (cons (point-min) (point-max)))))
   (unless (fboundp 'gptel-fsm-info)
     (fset 'gptel-fsm-info (lambda (fsm) (plist-get fsm :info))))
   (unless (fboundp 'gptel--fsm-next)
@@ -726,7 +724,7 @@ Covers:
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
-  "Test calibration factor: normal update, clamping, no-op, and compacting-p clearing."
+  "Test calibration factor: normal update, clamping, no-op, and non-interference with compacting-p."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (setq-local gptel-agent-harness--token-calibration 1.0)
@@ -754,7 +752,7 @@ Covers:
       (setq-local gptel--token-usage (list (list :input 120 :output 50) nil))
       (gptel-agent-harness--update-token-calibration)
       (should (= gptel-agent-harness--token-calibration 1.5))
-      ;; Clears compacting-p when set
+      ;; Does not clear compacting-p anymore
       (setq-local gptel-agent-harness--compacting-p t)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
       (setq-local gptel--token-usage (list (list :input 150 :output 20) nil))
@@ -1734,7 +1732,6 @@ Covers:
                 ((symbol-function 'gptel-mode)
                  (lambda (&optional arg)
                    (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
-                ((symbol-function 'gptel--restore-props) #'ignore)
                 ((symbol-function 'gptel-get-tool)
                  (lambda (name) (list :name name :function #'ignore)))
                 ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
