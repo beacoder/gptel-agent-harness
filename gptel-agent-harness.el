@@ -49,26 +49,30 @@
 
 (defcustom gptel-agent-harness-verbose nil
   "Log harness actions."
-  :type 'boolean)
+  :type 'boolean
+  :group 'gptel-agent-harness)
 
 ;;;; Completion Supervision
 (defcustom gptel-agent-harness-max-nudges 2
   "Maximum consecutive completion nudges.
 
 Reset whenever the LLM performs tool calls."
-  :type 'integer)
+  :type 'integer
+  :group 'gptel-agent-harness)
 
 (defcustom gptel-agent-harness-nudge-message
   "Review the original user request and the Task Completion Rules \
 in the context. Verify whether all completion criteria are satisfied. \
 If not, continue by making tool calls. Do not stop until the rules are fully met."
   "Message injected when the agent tries to stop."
-  :type 'string)
+  :type 'string
+  :group 'gptel-agent-harness)
 
 ;;;; Context Management
 (defcustom gptel-agent-harness-context-trigger 0.70
   "Compact when context usage exceeds this ratio."
-  :type 'float)
+  :type 'float
+  :group 'gptel-agent-harness)
 
 (defcustom gptel-agent-harness-context-windows
   '(("gpt-5-mini" . 128000)
@@ -82,13 +86,9 @@ If not, continue by making tool calls. Do not stop until the rules are fully met
     ("glm-5.1" . 128000)
     ("kimi-k2.7" . 256000)
     ("kimi" . 128000))
-  "Known model context window sizes.
-
-Entries are matched in order using `string-match-p', so place
-more specific patterns before general ones."
-  :type '(alist
-          :key-type string
-          :value-type integer))
+  "Known model context window sizes."
+  :type '(alist :key-type string :value-type integer)
+  :group 'gptel-agent-harness)
 
 (defconst gptel-agent-harness-compact-prompt-file
   (expand-file-name
