@@ -80,30 +80,36 @@ Persists across compaction epochs for latency benefit.")
   "Buffer-local set of cache keys whose full results are already in conversation.
 Cleared on compaction so the LLM gets full results in the new epoch.")
 
-(defvar gptel-agent-harness-cache--stats
-  (make-hash-table :test 'eq :size 4)
-  "Global cache statistics for diagnostics.
-Keys: :hits :misses :dedups :invalidations.")
+(defvar-local gptel-agent-harness-cache--stats nil
+  "Buffer-local cache statistics for diagnostics.
+Keys: :hits :misses :dedups :invalidations.
+Initialized on first access via `gptel-agent-harness-cache--ensure-stats'.")
 
-;; Initialize stats
-(dolist (key '(:hits :misses :dedups :invalidations))
-  (puthash key 0 gptel-agent-harness-cache--stats))
+(defun gptel-agent-harness-cache--ensure-stats ()
+  "Ensure statistics hash table exists for the current buffer."
+  (unless gptel-agent-harness-cache--stats
+    (setq gptel-agent-harness-cache--stats
+          (make-hash-table :test 'eq :size 4))
+    (dolist (key '(:hits :misses :dedups :invalidations))
+      (puthash key 0 gptel-agent-harness-cache--stats))))
 
 (defun gptel-agent-harness-cache--inc-stat (key)
   "Increment statistic KEY by 1."
+  (gptel-agent-harness-cache--ensure-stats)
   (puthash key (1+ (gethash key gptel-agent-harness-cache--stats 0))
            gptel-agent-harness-cache--stats))
 
 ;;;; Hash Table Management
 
 (defun gptel-agent-harness-cache--ensure-tables ()
-  "Ensure cache and seen tables exist for the current buffer."
+  "Ensure cache, seen, and stats tables exist for the current buffer."
   (unless gptel-agent-harness-cache--table
     (setq gptel-agent-harness-cache--table
           (make-hash-table :test 'equal :size 64)))
   (unless gptel-agent-harness-cache--seen
     (setq gptel-agent-harness-cache--seen
-          (make-hash-table :test 'equal :size 64))))
+          (make-hash-table :test 'equal :size 64)))
+  (gptel-agent-harness-cache--ensure-stats))
 
 ;;;; Cache Key Construction
 
@@ -368,15 +374,17 @@ PATH is the file that was modified."
 ;;;; Diagnostics
 
 (defun gptel-agent-harness-cache-stats ()
-  "Display cache statistics in the echo area."
+  "Display cache statistics for the current buffer in the echo area."
   (interactive)
+  (gptel-agent-harness-cache--ensure-stats)
   (let ((entries (if gptel-agent-harness-cache--table
                      (hash-table-count gptel-agent-harness-cache--table)
                    0))
         (seen (if gptel-agent-harness-cache--seen
                   (hash-table-count gptel-agent-harness-cache--seen)
                 0)))
-    (message "Cache: %d entries, %d seen this epoch | Hits: %d, Misses: %d, Dedups: %d, Invalidations: %d"
+    (message "[Buffer %s] Cache: %d entries, %d seen | Hits: %d, Misses: %d, Dedups: %d, Invalidations: %d"
+             (buffer-name)
              entries seen
              (gethash :hits gptel-agent-harness-cache--stats 0)
              (gethash :misses gptel-agent-harness-cache--stats 0)
@@ -390,6 +398,8 @@ PATH is the file that was modified."
     (clrhash gptel-agent-harness-cache--table))
   (when gptel-agent-harness-cache--seen
     (clrhash gptel-agent-harness-cache--seen))
+  (when gptel-agent-harness-cache--stats
+    (clrhash gptel-agent-harness-cache--stats))
   (message "gptel-agent-harness-cache: cleared"))
 
 ;;;; Enable / Disable
@@ -440,7 +450,8 @@ Edit/Write/Insert for write-through invalidation."
 (defun gptel-agent-harness-cache--teardown ()
   "Clean up cache state for the current buffer."
   (setq gptel-agent-harness-cache--table nil)
-  (setq gptel-agent-harness-cache--seen nil))
+  (setq gptel-agent-harness-cache--seen nil)
+  (setq gptel-agent-harness-cache--stats nil))
 
 (provide 'gptel-agent-harness-cache)
 
