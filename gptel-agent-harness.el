@@ -86,7 +86,10 @@ If not, continue by making tool calls. Do not stop until the rules are fully met
     ("glm-5.1" . 128000)
     ("kimi-k2.7" . 256000)
     ("kimi" . 128000))
-  "Known model context window sizes."
+  "Known model context window sizes.
+
+Entries are matched in order using `string-match-p', so place
+more specific patterns before general ones."
   :type '(alist :key-type string :value-type integer)
   :group 'gptel-agent-harness)
 
