@@ -28,22 +28,15 @@
 
 (require 'gptel)
 (require 'gptel-agent)
+(require 'gptel-agent-harness-cache)
 (require 'gptel-agent-harness-session)
+(require 'gptel-agent-harness-tools)
 (require 'project)
 
 ;;;; Context Compaction
 
 (defvar gptel-agent-harness-compact-prompt-file)
-
-(defun gptel-agent-harness--read-compact-prompt ()
-  "Read the compact prompt from `gptel-agent-harness-compact-prompt-file'."
-  (if (file-exists-p gptel-agent-harness-compact-prompt-file)
-      (with-temp-buffer
-        (insert-file-contents gptel-agent-harness-compact-prompt-file)
-        (buffer-string))
-    (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
-
-(declare-function gptel-agent-harness-cache--reset-epoch "gptel-agent-harness-cache")
+(declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
 
 (defun gptel-agent-harness-commands--compact-callback (resp info)
   "Callback for `gptel-agent-harness-commands-compact'.
@@ -88,29 +81,9 @@ reports the error.  INFO is the request info plist."
         (gptel--update-status " Error: Compaction failed" 'error))
       (message "Compaction failed: unexpected response type %S" (type-of resp))))))
 
-(defun gptel-agent-harness--strip-compact-prefix ()
-  "Strip the header and separator from current buffer, keeping the summary.
-If a previous compaction frame exists (header + summary + separator),
-remove the header and separator, leaving the old summary as plain text
-followed by the new conversation content.
+(declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
 
-Must be called with point in the buffer to compact."
-  (save-excursion
-    (goto-char (point-min))
-    (when (search-forward gptel-agent-harness-compact-header nil t)
-      ;; Remove the header (already matched, point is after it).
-      (delete-region (point-min) (point))
-      ;; Find and remove the separator.
-      (when (search-forward gptel-agent-harness-compact-separator nil t)
-        (replace-match "\n\n" t t)))))
-
-(defun gptel-agent-harness--insert-compact-frame ()
-  "Insert the compact header at buffer start and separator at buffer end.
-Call this after the LLM has written its summary into the buffer."
-  (goto-char (point-min))
-  (insert gptel-agent-harness-compact-header)
-  (goto-char (point-max))
-  (insert gptel-agent-harness-compact-separator))
+(declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness")
 
 (defun gptel-agent-harness-commands-compact (&optional post-func)
   "Compact the current buffer contents using the LLM.
@@ -217,8 +190,6 @@ DESCRIPTION is used in error messages."
         (insert-file-contents file)
         (buffer-string))
     (error "%s prompt file not found: %s" description file)))
-
-;; Removed duplicate function definition - the first definition with 'description' parameter is sufficient
 
 (defun gptel-agent-harness-commands--read-initialize-prompt ()
   "Read and return the initialize prompt file contents."
