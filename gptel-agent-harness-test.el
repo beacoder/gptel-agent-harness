@@ -1591,7 +1591,7 @@ Covers:
 ;;;; Compact Buffer Command Tests
 
 (ert-deftest gptel-agent-harness-test-compact-buffer-preconditions ()
-  "Test compact-buffer errors for missing gptel-mode and in-progress compaction."
+  "Test compact-buffer errors for missing `gptel-mode' and in-progress compaction."
   ;; Not in gptel buffer
   (with-temp-buffer
     (setq-local gptel-mode nil)
