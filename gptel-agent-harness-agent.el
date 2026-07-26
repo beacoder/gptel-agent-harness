@@ -74,7 +74,7 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
 ;;;; Agent Definition Macro
 
 (defmacro gptel-agent-harness-agent--define (name mcp-servers)
-  "Define a gptel agent function with gptel-name as NAME and connect it to MCP-SERVERS."
+  "Define a gptel agent function with gptel-name as NAME connected to MCP-SERVERS."
   (let ((func-name (intern (format "gptel-%s" name)))
         (agent-name (format "gptel-%s" name)))
     `(progn
