@@ -1234,7 +1234,7 @@ Covers:
                  "/a ... /a")))
 
 (ert-deftest gptel-agent-harness-test-review-creates-dedicated-buffer ()
-  "Test review command creates a buffer, sets system prompt, and passes arguments."
+  "Test review command creates a buffer, sets system prompt."
   (let ((temp-file (make-temp-file "review-" nil ".txt" "You are a code reviewer at ${path}. $ARGUMENTS")))
     (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
       (cl-letf (((symbol-function 'read-string)
@@ -1255,14 +1255,14 @@ Covers:
             (should (string-match-p "abc123" gptel-system-prompt))
             (goto-char (point-max))
             (forward-line -1)
-            (should (string-match-p "abc123" (thing-at-point 'line t))))
+            (should (string-match-p "Review the requested code changes" (thing-at-point 'line t))))
           (kill-buffer buf))
         ;; Without arguments (nil)
         (let ((buf (gptel-agent-harness-commands-review nil)))
           (with-current-buffer buf
             (goto-char (point-max))
             (forward-line -1)
-            (should (string-match-p "Review code changes" (thing-at-point 'line t))))
+            (should (string-match-p "Review the requested code changes" (thing-at-point 'line t))))
           (kill-buffer buf))))
     (delete-file temp-file)))
 
