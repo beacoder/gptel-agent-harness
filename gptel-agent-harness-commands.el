@@ -330,10 +330,9 @@ A dedicated *gptel-agent-review* buffer is created for the review."
 (defun gptel-agent-harness-commands-summary ()
   "Summarize the current gptel buffer conversation.
 
-Uses the summary prompt from `gptel-agent-harness-commands--summary-prompt-file'
-as the system prompt, and sends the current buffer's conversation history as user
-input.  If the region is active, uses the region content instead of the full
-buffer.  The resulting summary is inserted at the end of the buffer."
+Uses summary prompt from `gptel-agent-harness-commands--summary-prompt-file'
+as system prompt, sending buffer conversation as user input.  If the
+region is active, uses region content instead of full buffer."
   (interactive)
   (unless (bound-and-true-p gptel-mode)
     (user-error "Not in a gptel buffer"))
