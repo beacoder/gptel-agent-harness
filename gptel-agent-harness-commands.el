@@ -307,10 +307,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
       (gptel-agent-harness--setup-session)
       (gptel--update-status " Reviewing..." 'warning)
       (goto-char (point-max))
-      (insert (format "Review code changes%s.\n"
-                      (if arguments
-                          (format " with arguments: %s" arguments)
-                        "")))
+      (insert "Review the requested code changes.")
       (gptel-send)
       gptel-buf)))
 
