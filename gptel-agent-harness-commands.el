@@ -38,6 +38,16 @@
 (defvar gptel-agent-harness-compact-prompt-file)
 (declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
 
+(defun gptel-agent-harness-commands--run-post-funcs (info)
+  "Call all post-funcs stored in INFO's :post plist and clear them.
+Each function is called with INFO as its argument."
+  (let ((funcs (plist-get info :post)))
+    (when funcs
+      (plist-put info :post nil)
+      (dolist (fn funcs)
+      (when (functionp fn)
+        (funcall fn info))))))
+
 (defun gptel-agent-harness-commands--compact-callback (resp info)
   "Callback for `gptel-agent-harness-commands-compact'.
 
@@ -47,6 +57,7 @@ reports the error.  INFO is the request info plist."
   (let ((buf (plist-get info :buffer)))
     (cond
      ((not (buffer-live-p buf))
+      (gptel-agent-harness-commands--run-post-funcs info)
       (user-error "Session buffer \"%s\" is no longer available"
                   (buffer-name buf)))
      ;; API error — resp is nil
@@ -54,7 +65,8 @@ reports the error.  INFO is the request info plist."
       (with-current-buffer buf
         (gptel--update-status
          (format " Error: %s" (plist-get info :status)) 'error))
-      (message "Compaction failed: %S" (plist-get info :status)))
+      (message "Compaction failed: %S" (plist-get info :status))
+      (gptel-agent-harness-commands--run-post-funcs info))
      ;; Success — resp is a string
      ((stringp resp)
       (with-current-buffer buf
@@ -63,23 +75,26 @@ reports the error.  INFO is the request info plist."
           (erase-buffer)
           (insert resp)
           (unless (eq (char-before) ?\n) (insert "\n")))
-        (gptel--update-status " Ready" 'success)))
+        (gptel--update-status " Ready" 'success))
+      (gptel-agent-harness-commands--run-post-funcs info))
      ;; Reasoning block — ignore, wait for text
      ((and (consp resp) (eq (car resp) 'reasoning)) nil)
-     ;; End-of-stream marker — ignore
+     ;; End-of-stream marker — ignore (non-streaming mode, never expected)
      ((eq resp t) nil)
      ;; Abort
      ((eq resp 'abort)
       (with-current-buffer buf
         (plist-put info :error "Compaction aborted")
         (gptel--update-status " Aborted" 'error))
-      (message "Compaction aborted"))
+      (message "Compaction aborted")
+      (gptel-agent-harness-commands--run-post-funcs info))
      ;; Anything else (e.g., tool call) — treat as error
      (t
       (with-current-buffer buf
         (plist-put info :error "Compaction failed: unexpected response type")
         (gptel--update-status " Error: Compaction failed" 'error))
-      (message "Compaction failed: unexpected response type %S" (type-of resp))))))
+      (message "Compaction failed: unexpected response type %S" (type-of resp))
+      (gptel-agent-harness-commands--run-post-funcs info)))))
 
 (declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
 
@@ -342,13 +357,19 @@ buffer.  The resulting summary is inserted at the end of the buffer."
         :callback (lambda (response info)
                     (pcase response
                       ((pred stringp)
-                       (with-current-buffer buf
-                         (goto-char (point-max))
-                         (insert "\n" response "\n")
-                         (gptel-agent-harness--auto-save-session)
-                         (gptel--update-status " Ready" 'success)))
+                       (if (string-blank-p response)
+                           (progn
+                             (message "Summary returned empty response")
+                             (with-current-buffer buf
+                               (gptel--update-status " Failed" 'error)))
+                         (with-current-buffer buf
+                           (goto-char (point-max))
+                           (insert "\n" response "\n")
+                           (gptel-agent-harness--auto-save-session)
+                           (gptel--update-status " Ready" 'success))))
                       (`(reasoning . ,_)   ;skip reasoning, await actual content
-                       (gptel--update-status " Summarizing..." 'warning))
+                       (with-current-buffer buf
+                         (gptel--update-status " Summarizing..." 'warning)))
                       (`t                   ;streaming end-of-stream marker
                        (gptel--update-status " Ready" 'success))
                       (`abort
