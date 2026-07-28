@@ -445,9 +445,37 @@ Helps distinguish the summary from original conversation text."
   :type 'string
   :group 'gptel-agent-harness)
 
+(defun gptel-agent-harness--content-to-text (content)
+  "Return the plain text of message CONTENT as a string, or nil.
+
+CONTENT may be a plain string, or a vector/list of message parts as
+produced by multimodal backends (OpenAI multipart vectors, Anthropic
+content-block lists, Gemini :parts).  Text is gathered from :text
+fields and bare strings; non-text parts (e.g. images) are ignored.
+Returns nil when no text is found."
+  (cond
+   ((stringp content) content)
+   ((null content) nil)
+   ((or (vectorp content) (listp content))
+    (let ((texts nil))
+      (mapc (lambda (part)
+              (cond
+               ((stringp part) (push part texts))
+               ((and (listp part) (stringp (plist-get part :text)))
+                (push (plist-get part :text) texts))))
+            (if (vectorp content) (append content nil) content))
+      (when texts
+        (let ((s (mapconcat #'identity (nreverse texts) "")))
+          (unless (string-empty-p s) s)))))
+   (t nil)))
+
 (defun gptel-agent-harness--last-user-request (fsm)
-  "Return the last user message from FSM, excluding nudge messages.
-Returns the content string, or nil if none found."
+  "Return the last user message text from FSM, excluding nudge messages.
+
+Returns a plain string suitable for re-sending, or nil if none found.
+Multimodal message content (vectors/lists of parts, or Gemini :parts)
+is reduced to its text via `gptel-agent-harness--content-to-text', so
+the caller can safely `insert' the result."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
          (messages (or (plist-get data :messages)
@@ -456,9 +484,12 @@ Returns the content string, or nil if none found."
          (nudge gptel-agent-harness-nudge-message))
     (cl-loop for i downfrom (1- (length messages)) to 0
              for msg = (aref messages i)
-             when (and (equal (plist-get msg :role) "user")
-                       (not (equal (plist-get msg :content) nudge)))
-             return (plist-get msg :content))))
+             for text = (and (equal (plist-get msg :role) "user")
+                             (gptel-agent-harness--content-to-text
+                              (or (plist-get msg :content)
+                                  (plist-get msg :parts))))
+             when (and text (not (equal text nudge)))
+             return text)))
 
 (defun gptel-agent-harness--strip-compact-prefix ()
   "Strip the header and separator from current buffer, keeping the summary.
