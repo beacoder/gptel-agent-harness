@@ -924,11 +924,9 @@ Covers:
       (should-not (gptel-agent-harness--need-compaction-p fsm)))))
 
 (ert-deftest gptel-agent-harness-test-last-user-request ()
-  "Test `--last-user-request' returns the last non-nudge user message as a
-plain string, including for multimodal and Gemini (:parts) turns.
-
-Multimodal user content is a vector/list of parts and Gemini stores text
-under :parts; the result must always be insertable text (a string)."
+  "Return the last non-nudge user message text across content shapes.
+Verifies plain strings, multimodal vector/list content, and Gemini
+\":parts\" content all reduce to an insertable plain string."
   (gptel-agent-harness-test--with-buffer buf
     ;; Plain string content: returns last non-nudge user message
     (let* ((nudge-msg gptel-agent-harness-nudge-message)
@@ -1477,8 +1475,8 @@ under :parts; the result must always be insertable text (a string)."
 ;;;; Update Context Ratio Tests
 
 (ert-deftest gptel-agent-harness-test-update-context-ratio ()
-  "Test `--update-context-ratio': computes/stores for a top-level FSM, and
-is a no-op for non-top-level FSMs or when :data is still a buffer."
+  "Compute and store the ratio for a top-level FSM, and no-op otherwise.
+It must be a no-op for non-top-level FSMs or when :data is still a buffer."
   (let ((gptel-agent-harness-verbose nil)
         (gptel-model "unknown-model"))  ; 32768 fallback
     ;; Top-level FSM with real data → ratio + raw estimate stored
@@ -2074,12 +2072,10 @@ unrelated / sibling entries are preserved."
             (delete-file temp-file)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-advice ()
-  "Read/glob/grep advice each cache and deduplicate, and honor the
-`gptel-agent-harness-cache-enabled' flag.
-
-Each advice function is exercised twice: the first call misses (invokes
-the wrapped fn and returns its real output) and the second call dedups
-(returns a \"[Cached: ...]\" marker without re-invoking the wrapped fn)."
+  "Read/glob/grep advice each cache results and deduplicate repeats.
+The `gptel-agent-harness-cache-enabled' flag is honored (disabled means
+no caching).  Each advice is exercised twice: the first call misses and
+invokes the wrapped fn; the second call dedups without re-invoking it."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (gptel-agent-harness-cache--ensure-tables)
