@@ -924,8 +924,13 @@ Covers:
       (should-not (gptel-agent-harness--need-compaction-p fsm)))))
 
 (ert-deftest gptel-agent-harness-test-last-user-request ()
-  "Test `--last-user-request' returns last non-nudge user message."
+  "Test `--last-user-request' returns the last non-nudge user message as a
+plain string, including for multimodal and Gemini (:parts) turns.
+
+Multimodal user content is a vector/list of parts and Gemini stores text
+under :parts; the result must always be insertable text (a string)."
   (gptel-agent-harness-test--with-buffer buf
+    ;; Plain string content: returns last non-nudge user message
     (let* ((nudge-msg gptel-agent-harness-nudge-message)
            (messages (vector
                       (list :role "user" :content "request 1")
@@ -944,7 +949,52 @@ Covers:
                       (list :role "assistant" :content "reply")))
            (fsm (gptel-agent-harness-test--make-fsm buf
                   :messages messages)))
-      (should-not (gptel-agent-harness--last-user-request fsm)))))
+      (should-not (gptel-agent-harness--last-user-request fsm)))
+    ;; Multimodal (OpenAI) vector content → text, ignoring image parts
+    (let* ((messages (vector
+                      (list :role "user"
+                            :content (vector '(:type "text" :text "describe ")
+                                             '(:type "image_url"
+                                               :image_url (:url "data:..."))
+                                             '(:type "text" :text "this image")))
+                      (list :role "assistant" :content "reply")))
+           (fsm (gptel-agent-harness-test--make-fsm buf :messages messages))
+           (req (gptel-agent-harness--last-user-request fsm)))
+      (should (stringp req))
+      (should (equal req "describe this image")))
+    ;; Gemini-style :contents with :parts and no :content
+    (let* ((messages (vector
+                      (list :role "user"
+                            :parts (vector '(:text "gemini question")))))
+           (fsm (gptel-agent-harness-test--make-fsm buf :contents messages))
+           (req (gptel-agent-harness--last-user-request fsm)))
+      (should (stringp req))
+      (should (equal req "gemini question")))))
+
+(ert-deftest gptel-agent-harness-test-content-to-text ()
+  "Test `--content-to-text' reduces multimodal content to plain text."
+  ;; Plain string passes through
+  (should (equal (gptel-agent-harness--content-to-text "hello") "hello"))
+  ;; nil → nil
+  (should-not (gptel-agent-harness--content-to-text nil))
+  ;; A plain empty string passes through as-is (caller guards separately)
+  (should (equal (gptel-agent-harness--content-to-text "") ""))
+  ;; OpenAI multipart vector: gather :text, ignore image parts
+  (should (equal (gptel-agent-harness--content-to-text
+                  (vector '(:type "text" :text "look at ")
+                          '(:type "image_url" :image_url (:url "data:..."))
+                          '(:type "text" :text "this")))
+                 "look at this"))
+  ;; Anthropic-style content-block list
+  (should (equal (gptel-agent-harness--content-to-text
+                  (list '(:type "text" :text "hi")
+                        '(:type "image" :source (:data "..."))))
+                 "hi"))
+  ;; Bare strings in a list
+  (should (equal (gptel-agent-harness--content-to-text (list "a" "b")) "ab"))
+  ;; No text parts → nil
+  (should-not (gptel-agent-harness--content-to-text
+               (vector '(:type "image_url" :image_url (:url "x"))))))
 
 ;;;; Transition Advice (Central Supervisor)
 
@@ -1427,9 +1477,11 @@ Covers:
 ;;;; Update Context Ratio Tests
 
 (ert-deftest gptel-agent-harness-test-update-context-ratio ()
-  "Test `--update-context-ratio' computes and stores ratio + raw estimate."
+  "Test `--update-context-ratio': computes/stores for a top-level FSM, and
+is a no-op for non-top-level FSMs or when :data is still a buffer."
   (let ((gptel-agent-harness-verbose nil)
         (gptel-model "unknown-model"))  ; 32768 fallback
+    ;; Top-level FSM with real data → ratio + raw estimate stored
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--token-calibration 1.0)
@@ -1442,18 +1494,11 @@ Covers:
                    :messages (vector (list :role "user" :content "hello")))))
         (gptel-agent-harness--update-context-ratio fsm)
         (with-current-buffer buf
-          ;; Ratio should be computed
           (should (numberp gptel-agent-harness--context-ratio))
           (should (> gptel-agent-harness--context-ratio 0))
-          ;; Raw estimate should be stored
           (should (numberp gptel-agent-harness--last-raw-estimate))
-          (should (> gptel-agent-harness--last-raw-estimate 0)))))))
-
-(ert-deftest gptel-agent-harness-test-update-context-ratio-skip-cases ()
-  "Test `--update-context-ratio' is a no-op for non-top-level FSMs and buffer data."
-  (let ((gptel-agent-harness-verbose nil)
-        (gptel-model "unknown-model"))
-    ;; Non-top-level FSM
+          (should (> gptel-agent-harness--last-raw-estimate 0)))))
+    ;; Non-top-level (sub-agent) FSM → no-op
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--context-ratio nil)
@@ -1466,7 +1511,7 @@ Covers:
         (with-current-buffer buf
           (should-not gptel-agent-harness--context-ratio)
           (should-not gptel-agent-harness--last-raw-estimate))))
-    ;; :data is a buffer (during assembly)
+    ;; :data is a buffer (during assembly) → no-op
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--context-ratio nil))
@@ -1935,40 +1980,39 @@ Covers:
           (delete-file temp-file))))))
 
 (ert-deftest gptel-agent-harness-test-cache-write-through-invalidation ()
-  "Test that editing a file invalidates related cache entries."
+  "Editing a file invalidates related cache entries (and their seen state).
+
+Covers: exact-file match; a containing directory whether or not the
+cached path carries a trailing slash (`expand-file-name' strips it in
+real use); an ancestor directory that contains the file; and that
+unrelated / sibling entries are preserved."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (gptel-agent-harness-cache--ensure-tables)
-      (let* ((dir "/tmp/project/src/")
-             (file (concat dir "foo.el"))
-             (key-read (list 'read file 1 50))
-             (key-grep (list 'grep "pattern" dir nil nil))
-             (key-unrelated (list 'read "/tmp/other/bar.el" 1 10)))
-        ;; Populate cache
-        (puthash key-read
-                 (list :result "foo content" :mtime nil :timestamp (float-time))
-                 gptel-agent-harness-cache--table)
-        (puthash key-grep
-                 (list :result "grep results" :mtime nil :timestamp (float-time))
-                 gptel-agent-harness-cache--table)
-        (puthash key-unrelated
-                 (list :result "other content" :mtime nil :timestamp (float-time))
-                 gptel-agent-harness-cache--table)
-        ;; Mark as seen
-        (puthash key-read t gptel-agent-harness-cache--seen)
-        (puthash key-grep t gptel-agent-harness-cache--seen)
-        (puthash key-unrelated t gptel-agent-harness-cache--seen)
-        ;; Invalidate
+      (let* ((file "/tmp/project/src/foo.el")
+             ;; Invalidated:
+             (key-read (list 'read file 1 50))                       ; exact file
+             (key-grep-slash (list 'grep "pattern" "/tmp/project/src/" nil nil)) ; dir, trailing slash
+             (key-grep-nodir (list 'grep "pattern" "/tmp/project/src" nil nil))  ; dir, no slash (real)
+             (key-glob-ancestor (list 'glob "*.el" "/tmp/project" nil))          ; ancestor dir
+             ;; Preserved:
+             (key-grep-sibling (list 'grep "pattern" "/tmp/project/other" nil nil)) ; sibling dir
+             (key-read-sibling (list 'read "/tmp/project/src/bar.el" 1 10))         ; sibling file
+             (key-unrelated (list 'read "/tmp/other/bar.el" 1 10))                  ; unrelated
+             (invalidated (list key-read key-grep-slash key-grep-nodir
+                                key-glob-ancestor))
+             (preserved (list key-grep-sibling key-read-sibling key-unrelated)))
+        (dolist (k (append invalidated preserved))
+          (puthash k (list :result "r" :mtime nil :timestamp (float-time))
+                   gptel-agent-harness-cache--table)
+          (puthash k t gptel-agent-harness-cache--seen))
         (gptel-agent-harness-cache--invalidate-path file)
-        ;; foo.el: invalidated (exact match)
-        (should-not (gethash key-read gptel-agent-harness-cache--table))
-        (should-not (gethash key-read gptel-agent-harness-cache--seen))
-        ;; grep on parent dir: invalidated (dir prefix match)
-        (should-not (gethash key-grep gptel-agent-harness-cache--table))
-        (should-not (gethash key-grep gptel-agent-harness-cache--seen))
-        ;; Unrelated: preserved
-        (should (gethash key-unrelated gptel-agent-harness-cache--table))
-        (should (gethash key-unrelated gptel-agent-harness-cache--seen))))))
+        (dolist (k invalidated)
+          (should-not (gethash k gptel-agent-harness-cache--table))
+          (should-not (gethash k gptel-agent-harness-cache--seen)))
+        (dolist (k preserved)
+          (should (gethash k gptel-agent-harness-cache--table))
+          (should (gethash k gptel-agent-harness-cache--seen)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-cacheable-p ()
   "Test `--cacheable-p' filters empty and error results."
@@ -2029,78 +2073,52 @@ Covers:
           (when (file-exists-p temp-file)
             (delete-file temp-file)))))))
 
-(ert-deftest gptel-agent-harness-test-cache-read-advice ()
-  "Test read advice caches, deduplicates, and skips when disabled."
+(ert-deftest gptel-agent-harness-test-cache-advice ()
+  "Read/glob/grep advice each cache and deduplicate, and honor the
+`gptel-agent-harness-cache-enabled' flag.
+
+Each advice function is exercised twice: the first call misses (invokes
+the wrapped fn and returns its real output) and the second call dedups
+(returns a \"[Cached: ...]\" marker without re-invoking the wrapped fn)."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (gptel-agent-harness-cache--ensure-tables)
       (let* ((gptel-agent-harness-cache-enabled t)
              (gptel-agent-harness-verbose nil)
-             (call-count 0)
-             (temp-file (make-temp-file "cache-read-" nil ".el" "line1\nline2\n"))
-             (fake-read (lambda (filename &optional _start _end)
-                          (cl-incf call-count)
-                          (format "content of %s" filename))))
+             (temp-file (make-temp-file "cache-adv-" nil ".el" "line1\nline2\n")))
         (unwind-protect
             (progn
-              ;; First call: miss, invokes orig-fn
-              (let ((r (gptel-agent-harness-cache--read-advice
-                        fake-read temp-file 1 10)))
-                (should (string-match-p "content of" r))
-                (should (= call-count 1)))
-              ;; Second call: dedup, no orig-fn
-              (let ((r (gptel-agent-harness-cache--read-advice
-                        fake-read temp-file 1 10)))
-                (should (string-match-p "\\[Cached:" r))
-                (should (= call-count 1)))
-              ;; With cache disabled: always calls orig-fn
-              (let ((gptel-agent-harness-cache-enabled nil))
-                (gptel-agent-harness-cache--read-advice fake-read temp-file 1 10)
+              ;; (advice-fn args return-value first-call-match)
+              (dolist (case
+                       (list
+                        (list #'gptel-agent-harness-cache--read-advice
+                              (list temp-file 1 10) "content of file" "content of")
+                        (list #'gptel-agent-harness-cache--glob-advice
+                              (list "*.el" "/tmp" nil)
+                              "/tmp/a.el\n/tmp/b.el\n" "a\\.el")
+                        (list #'gptel-agent-harness-cache--grep-advice
+                              (list "match" "/tmp/file.el" nil nil)
+                              "5:match here\n" "match here")))
+                (cl-destructuring-bind (advice args ret first-match) case
+                  (let* ((call-count 0)
+                         (fake (lambda (&rest _) (cl-incf call-count) ret)))
+                    ;; First call: miss → real content, wrapped fn invoked once
+                    (let ((r (apply advice fake args)))
+                      (should (string-match-p first-match r))
+                      (should (= call-count 1)))
+                    ;; Second call: dedup → cached marker, wrapped fn not invoked
+                    (let ((r (apply advice fake args)))
+                      (should (string-match-p "\\[Cached:" r))
+                      (should (= call-count 1))))))
+              ;; Disabled flag: wrapped fn always invoked, no caching/dedup
+              (let* ((gptel-agent-harness-cache-enabled nil)
+                     (call-count 0)
+                     (fake (lambda (&rest _) (cl-incf call-count) "content of file")))
+                (gptel-agent-harness-cache--read-advice fake temp-file 1 10)
+                (gptel-agent-harness-cache--read-advice fake temp-file 1 10)
                 (should (= call-count 2))))
           (when (file-exists-p temp-file)
             (delete-file temp-file)))))))
-
-(ert-deftest gptel-agent-harness-test-cache-glob-advice ()
-  "Test glob advice caches and deduplicates."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (gptel-agent-harness-cache--ensure-tables)
-      (let* ((gptel-agent-harness-cache-enabled t)
-             (gptel-agent-harness-verbose nil)
-             (call-count 0)
-             (fake-glob (lambda (_pattern &optional _path _depth)
-                          (cl-incf call-count)
-                          "/tmp/a.el\n/tmp/b.el\n")))
-        ;; First call
-        (let ((r (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)))
-          (should (string-match-p "a\\.el" r))
-          (should (= call-count 1)))
-        ;; Second call: dedup
-        (let ((r (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)))
-          (should (string-match-p "\\[Cached:" r))
-          (should (= call-count 1)))))))
-
-(ert-deftest gptel-agent-harness-test-cache-grep-advice ()
-  "Test grep advice caches and deduplicates."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (gptel-agent-harness-cache--ensure-tables)
-      (let* ((gptel-agent-harness-cache-enabled t)
-             (gptel-agent-harness-verbose nil)
-             (call-count 0)
-             (fake-grep (lambda (_regex _path &optional _glob _ctx)
-                          (cl-incf call-count)
-                          "5:match here\n")))
-        ;; First call
-        (let ((r (gptel-agent-harness-cache--grep-advice
-                  fake-grep "match" "/tmp/file.el" nil nil)))
-          (should (string-match-p "match here" r))
-          (should (= call-count 1)))
-        ;; Second call: dedup
-        (let ((r (gptel-agent-harness-cache--grep-advice
-                  fake-grep "match" "/tmp/file.el" nil nil)))
-          (should (string-match-p "\\[Cached:" r))
-          (should (= call-count 1)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-skips-error-results ()
   "Test that error results from tool calls are not cached."
