@@ -45,8 +45,8 @@ Each function is called with INFO as its argument."
     (when funcs
       (plist-put info :post nil)
       (dolist (fn funcs)
-      (when (functionp fn)
-        (funcall fn info))))))
+        (when (functionp fn)
+          (funcall fn info))))))
 
 (defun gptel-agent-harness-commands--compact-callback (resp info)
   "Callback for `gptel-agent-harness-commands-compact'.
