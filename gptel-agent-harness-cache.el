@@ -326,7 +326,6 @@ are passed through."
 Also removes affected entries from the seen set."
   (when (and gptel-agent-harness-cache--table (stringp path))
     (let ((expanded (expand-file-name path))
-          (dir (file-name-directory (expand-file-name path)))
           (to-remove nil))
       (maphash
        (lambda (key _entry)
@@ -335,11 +334,17 @@ Also removes affected entries from the seen set."
            (when (cl-some
                   (lambda (arg)
                     (and (stringp arg)
-                         (or ;; Exact file match
+                         (not (string-empty-p arg))
+                         (or ;; Exact file match (e.g. Read of this file)
                              (string= arg expanded)
-                             ;; arg is inside the edited file's directory
-                             ;; (catches directory-based grep/glob entries)
-                             (and dir (string-prefix-p dir arg)))))
+                             ;; The edited file lies within a cached search
+                             ;; directory — catches directory-based grep/glob
+                             ;; entries, including any ancestor directory that
+                             ;; contains the file.  `file-name-as-directory'
+                             ;; normalizes ARG so the match works whether or
+                             ;; not it carries a trailing slash.
+                             (string-prefix-p (file-name-as-directory arg)
+                                              expanded))))
                   args)
              (push key to-remove))))
        gptel-agent-harness-cache--table)
