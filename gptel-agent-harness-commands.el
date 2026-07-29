@@ -168,6 +168,9 @@ without waiting for the automatic trigger."
          (with-current-buffer buf
            (kill-local-variable 'gptel-agent-compact-prompt)
            (setq gptel-agent-harness--compacting-p nil)
+           ;; Reset nudge count so the post-compaction conversation starts
+           ;; with a fresh nudge budget, matching the automatic path.
+           (setq gptel-agent-harness--nudge-count 0)
            (if (and info (plist-get info :error))
                (message "Manual compaction failed: %s"
                         (plist-get info :error))
