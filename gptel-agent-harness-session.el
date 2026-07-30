@@ -175,6 +175,14 @@ On success, renames the session file to include the title."
                      (rename-file old-file new-file t)
                      (setq gptel-agent-harness--session-file-cache new-file)
                      (setq gptel-agent-harness--session-title title)
+                     ;; Update buffer name to reflect the title
+                     (let* ((display-title (replace-regexp-in-string "-" " " title))
+                            (max-len 20)
+                            (short (if (> (length display-title) max-len)
+                                       (concat (substring display-title 0 (- max-len 1)) "…")
+                                     display-title))
+                            (new-buf-name (format "*%s*" short)))
+                       (rename-buffer new-buf-name t))
                      (when gptel-agent-harness-verbose
                        (message "gptel-agent-harness: session titled — %s"
                                 title)))))))))))))
