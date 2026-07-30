@@ -114,6 +114,8 @@ Set once on first auto-save, reused for subsequent saves.")
   "Sanitize TITLE for use as a filename component.
 Removes/replaces characters unsafe for filesystems."
   (let ((clean (string-trim title)))
+    ;; Replace newlines/carriage returns with space
+    (setq clean (replace-regexp-in-string "[\n\r]+" " " clean))
     ;; Remove quotes if the LLM wraps the title
     (when (and (string-prefix-p "\"" clean) (string-suffix-p "\"" clean))
       (setq clean (substring clean 1 -1)))
