@@ -194,7 +194,7 @@ When in doubt, use it.
 - File operations → use `Read`, `Write`, `Edit`, `Glob`, `Grep` instead
 - Finding files → use `Glob`, not find
 - Searching contents → use `Grep`, not grep/rg
-- Reading files → use `Edit`, not cat/head/tail
+- Reading files → use `Read`, not cat/head/tail
 - Editing files → use `Edit`, not sed/awk
 - Writing files → use `Write`, not echo or heredocs
 - Communication with user → output text directly, not echo
