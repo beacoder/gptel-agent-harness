@@ -1114,7 +1114,13 @@ Verifies plain strings, multimodal vector/list content, and Gemini
                  "trailing"))
   ;; Whitespace trimmed
   (should (equal (gptel-agent-harness--sanitize-title "  spaced out  ")
-                 "spaced-out")))
+                 "spaced-out"))
+  ;; Embedded newlines collapsed
+  (should (equal (gptel-agent-harness--sanitize-title "Fix the bug\nin session handling")
+                 "Fix-the-bug-in-session-handling"))
+  ;; Multiple newlines and carriage returns
+  (should (equal (gptel-agent-harness--sanitize-title "Line one\r\n\r\nLine two")
+                 "Line-one-Line-two")))
 
 (ert-deftest gptel-agent-harness-test-setup-teardown-session ()
   "Test session and calibration setup/teardown hook management."
