@@ -26,6 +26,7 @@
 ;;
 ;;; Code:
 
+(require 'cl-lib)
 (require 'gptel)
 (require 'gptel-agent)
 (require 'gptel-agent-harness-cache)
@@ -179,20 +180,6 @@ without waiting for the automatic trigger."
              (gptel-agent-harness--insert-compact-frame)
              (message "Buffer compacted successfully."))))))))
 
-(defconst gptel-agent-harness-commands--initialize-prompt-file
-  (expand-file-name
-   "prompts/initialize.txt"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Failed to find gptel-agent-harness"))))
-  "File path for the project initialization prompt.")
-
-(defconst gptel-agent-harness-commands--review-prompt-file
-  (expand-file-name
-   "prompts/review.txt"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Failed to find gptel-agent-harness"))))
-  "File path for the code review prompt.")
-
 (defconst gptel-agent-harness-commands--summary-prompt-file
   (expand-file-name
    "prompts/summary.txt"
@@ -209,16 +196,6 @@ DESCRIPTION is used in error messages."
         (buffer-string))
     (error "%s prompt file not found: %s" description file)))
 
-(defun gptel-agent-harness-commands--read-initialize-prompt ()
-  "Read and return the initialize prompt file contents."
-  (gptel-agent-harness-commands--read-prompt-file
-   gptel-agent-harness-commands--initialize-prompt-file "Initialize"))
-
-(defun gptel-agent-harness-commands--read-review-prompt ()
-  "Read and return the review prompt file contents."
-  (gptel-agent-harness-commands--read-prompt-file
-   gptel-agent-harness-commands--review-prompt-file "Review"))
-
 (defun gptel-agent-harness-commands--read-summary-prompt ()
   "Read and return the summary prompt file contents."
   (gptel-agent-harness-commands--read-prompt-file
@@ -233,9 +210,112 @@ DESCRIPTION is used in error messages."
                   "\\$ARGUMENTS" (or extra "") result t t))
     result))
 
-;;;###autoload
-(defun gptel-agent-harness-commands-initialize (&optional project-dir extra)
-  "Initialize a project by creating or updating AGENTS.md.
+(defun gptel-agent-harness-commands--start-session
+    (prompt-content dir buffer-name status kickoff)
+  "Spawn a dedicated gptel agent buffer and kick off the conversation.
+
+Creates a new interactive gptel buffer named BUFFER-NAME with
+PROMPT-CONTENT as its buffer-local system prompt, agent tools enabled,
+and `default-directory'/project set to DIR.  STATUS is shown in the
+mode-line, KICKOFF is inserted as the first user message, and the
+request is sent.  Returns the new buffer.
+
+Shared by the `initialize'/`review' commands (via
+`gptel-agent-harness-commands--define-session-command') and by
+auto-discovered custom commands."
+  (let ((gptel-buf (gptel (generate-new-buffer-name buffer-name)
+                          nil nil 'interactive)))
+    (with-current-buffer gptel-buf
+      (setq default-directory dir)
+      (setq-local gptel-system-prompt prompt-content)
+      (setq-local gptel-temperature 0)
+      (setq gptel-agent-harness--project-dir dir)
+      (gptel-agent-update)
+      ;; Enable tools for this buffer
+      (setq-local gptel-use-tools t)
+      (setq-local gptel-tools
+                  (mapcar #'gptel-get-tool
+                          gptel-agent-harness--default-tools))
+      (gptel-agent-harness--setup-session)
+      (gptel--update-status status 'warning)
+      (goto-char (point-max))
+      (insert kickoff)
+      (gptel-send))
+    gptel-buf))
+
+;;;; New-session command generator
+;;
+;; `initialize' and `review' both: read a prompt file from prompts/,
+;; substitute ${path}/$ARGUMENTS, spawn a dedicated gptel buffer with agent
+;; tools enabled, and kick off the conversation.  The macro below captures
+;; that shared flow so adding a command needs only a prompt file plus a short
+;; declaration.  For each KEY it defines:
+;;   - gptel-agent-harness-commands--KEY-prompt-file  (defconst, let-bindable)
+;;   - gptel-agent-harness-commands--read-KEY-prompt  (prompt reader)
+;;   - the interactive command itself
+
+(cl-defmacro gptel-agent-harness-commands--define-session-command
+    (key command arglist interactive-spec
+         &key docstring dir extra buffer-name status kickoff validate-dir)
+  "Define a new-session agent command COMMAND from a prompt file.
+
+KEY is a symbol (e.g. `review'); the prompt text is read from the file
+KEY.txt in the package prompt directory.  KEY derives the prompt-file
+constant `gptel-agent-harness-commands--KEY-prompt-file' and the reader
+`gptel-agent-harness-commands--read-KEY-prompt'.
+
+ARGLIST and INTERACTIVE-SPEC are the command's argument list and the
+body of its `interactive' form.  DIR, EXTRA, BUFFER-NAME and KICKOFF are
+forms evaluated in the command body; DIR is bound to `dir' first and is
+in scope for BUFFER-NAME and KICKOFF.  EXTRA is substituted into the
+prompt's $ARGUMENTS placeholder and DIR into ${path}.  When VALIDATE-DIR
+is non-nil the command errors unless `dir' is an existing directory.
+STATUS is the status-line string shown while the request is in flight.
+KICKOFF is inserted verbatim (include a trailing newline if desired)."
+  (let* ((prefix "gptel-agent-harness-commands")
+         (const-sym (intern (format "%s--%s-prompt-file" prefix key)))
+         (reader-sym (intern (format "%s--read-%s-prompt" prefix key)))
+         (desc (capitalize (symbol-name key)))
+         (rel-path (format "prompts/%s.txt" key)))
+    `(progn
+       (defconst ,const-sym
+         (expand-file-name
+          ,rel-path
+          (file-name-directory (or (locate-library "gptel-agent-harness")
+                                   (error "Failed to find gptel-agent-harness"))))
+         ,(format "File path for the %s prompt." key))
+       (defun ,reader-sym ()
+         ,(format "Read and return the %s prompt file contents." key)
+         (gptel-agent-harness-commands--read-prompt-file ,const-sym ,desc))
+       (defun ,command ,arglist
+         ,docstring
+         (interactive ,interactive-spec)
+         (let ((dir ,dir)
+               (extra ,extra))
+           ,@(when validate-dir
+               '((unless (file-directory-p dir)
+                   (user-error "Invalid project directory: %s" dir))))
+           (let ((prompt-content
+                  (gptel-agent-harness-commands--substitute-placeholders
+                   (,reader-sym) dir extra)))
+             (gptel-agent-harness-commands--start-session
+              prompt-content dir ,buffer-name ,status ,kickoff)))))))
+
+;;;###autoload (autoload 'gptel-agent-harness-commands-initialize "gptel-agent-harness-commands" nil t)
+(gptel-agent-harness-commands--define-session-command
+    initialize gptel-agent-harness-commands-initialize
+    (&optional project-dir extra)
+    (let* ((detected (if-let* ((proj (project-current)))
+                         (project-root proj)
+                       default-directory))
+           (proj-name (file-name-nondirectory
+                       (directory-file-name detected)))
+           (dir (if (y-or-n-p (format "Initialize project %s? " proj-name))
+                    detected
+                  (read-directory-name "Project directory: ")))
+           (extra-str (read-string "Extra instructions (for $ARGUMENTS): ")))
+      (list dir (and (not (string-blank-p extra-str)) extra-str)))
+  :docstring "Initialize a project by creating or updating AGENTS.md.
 
 Creates a dedicated gptel buffer with agent tools enabled and uses the
 initialize prompt from `gptel-agent-harness-commands--initialize-prompt-file' to
@@ -248,52 +328,23 @@ user, who can confirm it or provide a different one.
 EXTRA is additional instructions to substitute into the $ARGUMENTS
 placeholder of the initialize prompt.  When called interactively, the
 user is prompted to provide extra instructions."
-  (interactive
-   (let* ((detected (if-let* ((proj (project-current)))
-                        (project-root proj)
-                      default-directory))
-          (proj-name (file-name-nondirectory
-                      (directory-file-name detected)))
-          (dir (if (y-or-n-p (format "Initialize project %s? " proj-name))
-                   detected
-                 (read-directory-name "Project directory: ")))
-          (extra-str (read-string "Extra instructions (for $ARGUMENTS): ")))
-     (list dir (and (not (string-blank-p extra-str)) extra-str))))
-  (unless (file-directory-p project-dir)
-    (user-error "Invalid project directory: %s" project-dir))
-  (let* ((raw-prompt (gptel-agent-harness-commands--read-initialize-prompt))
-         (prompt-content (gptel-agent-harness-commands--substitute-placeholders
-                          raw-prompt project-dir extra))
-         (proj-name (file-name-nondirectory
-                     (directory-file-name project-dir)))
-         ;; Set up gptel variables for the new buffer
-         (gptel-system-prompt prompt-content)
-         (gptel-temperature 0)
-         (gptel-buf
-          (gptel (generate-new-buffer-name
-                  (format "*gptel-agent-init:%s*" proj-name))
-                 nil nil 'interactive)))
-    (with-current-buffer gptel-buf
-      (setq default-directory project-dir)
-      (setq gptel-agent-harness--project-dir project-dir)
-      (gptel-agent-update)
-      ;; Enable tools for this buffer
-      (setq-local gptel-use-tools t)
-      (setq-local gptel-tools
-                  (mapcar #'gptel-get-tool gptel-agent-harness--default-tools))
-      (gptel-agent-harness--setup-session)
-      (gptel--update-status " Initializing..." 'warning)
-      (goto-char (point-max))
-      (insert (format
-               "Analyze the repository at %s and create/update AGENTS.md."
-               project-dir))
-      (insert "\n")
-      (gptel-send))
-    gptel-buf))
+  :dir project-dir
+  :extra extra
+  :validate-dir t
+  :buffer-name (format "*gptel-agent-init:%s*"
+                       (file-name-nondirectory (directory-file-name dir)))
+  :status " Initializing..."
+  :kickoff (format
+            "Analyze the repository at %s and create/update AGENTS.md.\n"
+            dir))
 
-;;;###autoload
-(defun gptel-agent-harness-commands-review (&optional arguments)
-  "Perform a code review using the review prompt.
+;;;###autoload (autoload 'gptel-agent-harness-commands-review "gptel-agent-harness-commands" nil t)
+(gptel-agent-harness-commands--define-session-command
+    review gptel-agent-harness-commands-review
+    (&optional arguments)
+    (let ((arg-str (read-string "Review arguments (commit/branch/PR, or empty for uncommitted changes): ")))
+      (list (and (not (string-blank-p arg-str)) arg-str)))
+  :docstring "Perform a code review using the review prompt.
 
 ARGUMENTS can be:
 - nil or empty: Review all uncommitted changes (default)
@@ -302,32 +353,124 @@ ARGUMENTS can be:
 - A PR URL or number: Review the pull request
 
 A dedicated *gptel-agent-review* buffer is created for the review."
-  (interactive
-   (let ((arg-str (read-string "Review arguments (commit/branch/PR, or empty for uncommitted changes): ")))
-     (list (and (not (string-blank-p arg-str)) arg-str))))
-  (let* ((raw-prompt (gptel-agent-harness-commands--read-review-prompt))
-         (prompt-content (gptel-agent-harness-commands--substitute-placeholders
-                          raw-prompt default-directory arguments))
-         gptel-buf)
-    (setq gptel-buf (gptel (generate-new-buffer-name "*gptel-agent-review*")
-                           nil nil 'interactive))
-    (with-current-buffer gptel-buf
-      (setq-local gptel-system-prompt prompt-content)
-      (setq-local gptel-temperature 0)
-      (setq default-directory (or (and (project-current)
-                                       (project-root (project-current)))
-                                  default-directory))
-      (setq gptel-agent-harness--project-dir default-directory)
-      (gptel-agent-update)
-      (setq-local gptel-use-tools t)
-      (setq-local gptel-tools
-                  (mapcar #'gptel-get-tool gptel-agent-harness--default-tools))
-      (gptel-agent-harness--setup-session)
-      (gptel--update-status " Reviewing..." 'warning)
-      (goto-char (point-max))
-      (insert "Review the requested code changes.")
-      (gptel-send)
-      gptel-buf)))
+  :dir (or (and (project-current) (project-root (project-current)))
+           default-directory)
+  :extra arguments
+  :buffer-name "*gptel-agent-review*"
+  :status " Reviewing..."
+  :kickoff "Review the requested code changes.")
+
+
+;;;; Auto-Discovered Custom Commands
+;;
+;; Any `NAME.txt' file dropped into `gptel-agent-harness-commands-custom-dir'
+;; becomes the interactive command `gptel-agent-harness-commands-NAME'.  The
+;; file contents are the system prompt; ${path} is replaced with the project
+;; root and $ARGUMENTS with the (optional) user input read interactively.
+;; Discovery runs at load time; call `gptel-agent-harness-commands-load-custom'
+;; to pick up newly added or edited files without restarting Emacs.
+
+(defcustom gptel-agent-harness-commands-custom-dir
+  (expand-file-name
+   "prompts/commands"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "Failed to find gptel-agent-harness"))))
+  "Directory scanned for custom command prompt files.
+Each `NAME.txt' file defines the interactive command
+`gptel-agent-harness-commands-NAME'.  See
+`gptel-agent-harness-commands-load-custom'."
+  :type 'directory
+  :group 'gptel-agent-harness)
+
+(defvar gptel-agent-harness-commands--custom-commands nil
+  "Command symbols defined from `gptel-agent-harness-commands-custom-dir'.")
+
+(defun gptel-agent-harness-commands--custom-name (file)
+  "Return a sanitized, symbol-safe command basename derived from FILE."
+  (let ((base (downcase (file-name-base file))))
+    ;; Collapse any run of non-alphanumeric characters into a single dash and
+    ;; trim leading/trailing dashes, so \"Fix Bug!.txt\" -> \"fix-bug\".
+    (string-trim (replace-regexp-in-string "[^a-z0-9]+" "-" base) "-+" "-+")))
+
+(defun gptel-agent-harness-commands--define-custom-command (file)
+  "Define an interactive command from prompt FILE.
+Return the command symbol, or nil when the derived name is empty or
+already bound to something the harness did not define (to avoid
+clobbering built-in commands or unrelated functions)."
+  (let* ((name (gptel-agent-harness-commands--custom-name file))
+         (sym (and (not (string-empty-p name))
+                   (intern (format "gptel-agent-harness-commands-%s" name)))))
+    (cond
+     ((null sym)
+      (message "gptel-agent-harness: ignoring custom prompt %s (empty name)"
+               (file-name-nondirectory file))
+      nil)
+     ((and (fboundp sym)
+           (not (memq sym gptel-agent-harness-commands--custom-commands)))
+      (message "gptel-agent-harness: skipping custom command %s (name already in use)"
+               sym)
+      nil)
+     (t
+      (defalias sym
+        (lambda (&optional arguments)
+          (interactive
+           (list (let ((s (read-string
+                           (format "%s $ARGUMENTS (empty for none): " name))))
+                   (and (not (string-blank-p s)) s))))
+          (let* ((dir (or (and (project-current)
+                               (project-root (project-current)))
+                          default-directory))
+                 (prompt-content
+                  (gptel-agent-harness-commands--substitute-placeholders
+                   (gptel-agent-harness-commands--read-prompt-file file name)
+                   dir arguments)))
+            (gptel-agent-harness-commands--start-session
+             prompt-content dir
+             (format "*gptel-agent-%s*" name)
+             (format " Running %s..." name)
+             "Proceed with the task described in your instructions.\n")))
+        (format "Custom gptel-agent command generated from a prompt file.
+
+Spawns a dedicated agent buffer whose system prompt is the contents of:
+  %s
+${path} is replaced with the project root and the optional ARGUMENTS
+string fills the $ARGUMENTS placeholder.
+
+Defined by `gptel-agent-harness-commands-load-custom'."
+                file))
+      sym))))
+
+;;;###autoload
+(defun gptel-agent-harness-commands-load-custom (&optional dir)
+  "Discover and define custom commands from DIR.
+DIR defaults to `gptel-agent-harness-commands-custom-dir'.  Each
+`NAME.txt' file becomes `gptel-agent-harness-commands-NAME'.  Existing
+harness-defined custom commands are redefined; names already bound to
+other functions are skipped.  Returns the list of command symbols."
+  (interactive)
+  (let ((dir (or dir gptel-agent-harness-commands-custom-dir))
+        (defined nil))
+    (when (and dir (file-directory-p dir))
+      (dolist (file (sort (directory-files dir t "\\.txt\\'") #'string<))
+        (unless (file-directory-p file)
+          (when-let* ((sym (gptel-agent-harness-commands--define-custom-command
+                            file)))
+            (push sym defined)))))
+    (setq gptel-agent-harness-commands--custom-commands (nreverse defined))
+    (when (called-interactively-p 'interactive)
+      (message "Defined %d custom command(s)%s"
+               (length gptel-agent-harness-commands--custom-commands)
+               (if gptel-agent-harness-commands--custom-commands
+                   (format ": %s"
+                           (mapconcat #'symbol-name
+                                      gptel-agent-harness-commands--custom-commands
+                                      ", "))
+                 "")))
+    gptel-agent-harness-commands--custom-commands))
+
+;; Discover custom commands present at load time.
+(gptel-agent-harness-commands-load-custom)
+
 
 ;;;###autoload
 (defun gptel-agent-harness-commands-summary ()
