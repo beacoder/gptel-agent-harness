@@ -1,7 +1,7 @@
 # gptel-agent-harness
 
 An extension to `gptel-agent` that makes it behave like a reliable coding agent (similar to OpenCode).
-It adds completion supervision, context management, session persistence, tool result caching,  custom agents and predefined commands.
+It adds completion supervision, context management, session persistence, tool result caching,  opencode agent and predefined commands.
 
 ## Features
 
@@ -10,7 +10,7 @@ It adds completion supervision, context management, session persistence, tool re
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
 - **Tool result caching** — Caches Glob/Grep/Read results with deduplication. Repeated identical tool calls within the same epoch return a short pointer instead of full content, saving tokens. Invalidated by file mtime, TTL, or write-through on Edit/Write/Insert.
-- **Custom agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
+- **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Commands** — Project initialization, code review, conversation summary, and manual compaction, plus user-defined commands auto-discovered from prompt files.
 
 ## Installation
