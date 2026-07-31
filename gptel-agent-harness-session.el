@@ -153,51 +153,46 @@ On success, renames the session file to include the title."
                  (> (length first-msg) 3))
         (setq gptel-agent-harness--session-title-pending t)
         ;; Disable tools/context/reasoning for the title request.
-        ;; Bind inside BUF: gptel builds the request from BUF's
-        ;; buffer-local values, so dynamic bindings only take effect
-        ;; when active in BUF (matters if called from another buffer).
-        (with-current-buffer buf
-          (let ((gptel-include-reasoning nil)
-                (gptel-use-tools nil)
-                (gptel-use-context nil)
-                (gptel-stream nil))
-            (gptel-request
-                (if (> (length first-msg) 500)
-                    (substring first-msg 0 500)
-                  first-msg)
-              :system (gptel-agent-harness--read-title-prompt)
-              :buffer buf
-              :stream nil
-              :callback
-              (lambda (response _info)
-                (when (buffer-live-p buf)
-                  (with-current-buffer buf
-                    (setq gptel-agent-harness--session-title-pending nil)
-                    (when (and (stringp response)
-                               (not (string-empty-p response))
-                               gptel-agent-harness--session-file-cache)
-                      (let* ((title (gptel-agent-harness--sanitize-title response))
-                             (old-file gptel-agent-harness--session-file-cache)
-                             (dir (file-name-directory old-file))
-                             (timestamp (format-time-string "%y%m%d%H%M%S"))
-                             (new-name (format "%s_%s.md" title timestamp))
-                             (new-file (expand-file-name new-name dir)))
-                        (when (and (not (string-empty-p title))
-                                   (file-exists-p old-file))
-                          (rename-file old-file new-file t)
-                          (setq gptel-agent-harness--session-file-cache new-file)
-                          (setq gptel-agent-harness--session-title title)
-                          ;; Update buffer name to reflect the title
-                          (let* ((display-title (replace-regexp-in-string "-" " " title))
-                                 (max-len 20)
-                                 (short (if (> (length display-title) max-len)
-                                            (concat (substring display-title 0 (- max-len 1)) "…")
-                                          display-title))
-                                 (new-buf-name (format "*%s*" short)))
-                            (rename-buffer new-buf-name t))
-                          (when gptel-agent-harness-verbose
-                            (message "gptel-agent-harness: session titled — %s"
-                                     title)))))))))))))))
+        (let ((gptel-include-reasoning nil)
+              (gptel-use-tools nil)
+              (gptel-use-context nil))
+          (gptel-request
+              (if (> (length first-msg) 500)
+                  (substring first-msg 0 500)
+                first-msg)
+            :system (gptel-agent-harness--read-title-prompt)
+            :buffer buf
+            :stream nil
+            :callback
+            (lambda (response _info)
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (setq gptel-agent-harness--session-title-pending nil)
+                  (when (and (stringp response)
+                             (not (string-empty-p response))
+                             gptel-agent-harness--session-file-cache)
+                    (let* ((title (gptel-agent-harness--sanitize-title response))
+                           (old-file gptel-agent-harness--session-file-cache)
+                           (dir (file-name-directory old-file))
+                           (timestamp (format-time-string "%y%m%d%H%M%S"))
+                           (new-name (format "%s_%s.md" title timestamp))
+                           (new-file (expand-file-name new-name dir)))
+                      (when (and (not (string-empty-p title))
+                                 (file-exists-p old-file))
+                        (rename-file old-file new-file t)
+                        (setq gptel-agent-harness--session-file-cache new-file)
+                        (setq gptel-agent-harness--session-title title)
+                        ;; Update buffer name to reflect the title
+                        (let* ((display-title (replace-regexp-in-string "-" " " title))
+                               (max-len 20)
+                               (short (if (> (length display-title) max-len)
+                                          (concat (substring display-title 0 (- max-len 1)) "…")
+                                        display-title))
+                               (new-buf-name (format "*%s*" short)))
+                          (rename-buffer new-buf-name t))
+                        (when gptel-agent-harness-verbose
+                          (message "gptel-agent-harness: session titled — %s"
+                                   title))))))))))))))
 
 ;;;; Session File Management
 
