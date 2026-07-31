@@ -1767,6 +1767,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
 
 (ert-deftest gptel-agent-harness-test-custom-command-runs ()
   "Test an invoked custom command spawns a buffer with substituted prompt."
+  (declare-function gptel-agent-harness-commands-trun "gptel-agent-harness" (&rest _))
   (gptel-agent-harness-test--with-temp-dir dir
     (with-temp-file (expand-file-name "trun.txt" dir)
       (insert "Explain code in ${path}. Focus: $ARGUMENTS"))
