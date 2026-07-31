@@ -1720,6 +1720,83 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
               (kill-buffer buf)))
         (delete-file temp-file)))))
 
+;;;; Custom Command Auto-Discovery Tests
+
+(ert-deftest gptel-agent-harness-test-custom-name-sanitize ()
+  "Test custom command name derivation is symbol-safe."
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/Explain.txt")
+                 "explain"))
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/Fix Bug!.txt")
+                 "fix-bug"))
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/write_docs.txt")
+                 "write-docs")))
+
+(ert-deftest gptel-agent-harness-test-custom-load-discovers-files ()
+  "Test `load-custom' defines one command per .txt file and ignores others."
+  (gptel-agent-harness-test--with-temp-dir dir
+    ;; Two prompt files plus a non-txt file that must be ignored.  Names are
+    ;; unique so they never collide with load-time example commands.
+    (with-temp-file (expand-file-name "tfoo.txt" dir) (insert "Foo ${path}."))
+    (with-temp-file (expand-file-name "tbar.txt" dir) (insert "Bar: $ARGUMENTS"))
+    (with-temp-file (expand-file-name "notes.md" dir) (insert "ignore me"))
+    (let ((gptel-agent-harness-commands--custom-commands nil))
+      (let ((defined (gptel-agent-harness-commands-load-custom dir)))
+        (unwind-protect
+            (progn
+              (should (= (length defined) 2))
+              (should (memq 'gptel-agent-harness-commands-tfoo defined))
+              (should (memq 'gptel-agent-harness-commands-tbar defined))
+              (should (commandp 'gptel-agent-harness-commands-tfoo))
+              (should (commandp 'gptel-agent-harness-commands-tbar))
+              (should-not (fboundp 'gptel-agent-harness-commands-notes)))
+          (fmakunbound 'gptel-agent-harness-commands-tfoo)
+          (fmakunbound 'gptel-agent-harness-commands-tbar))))))
+
+(ert-deftest gptel-agent-harness-test-custom-does-not-clobber-builtin ()
+  "Test discovery refuses to overwrite an existing non-custom command."
+  (gptel-agent-harness-test--with-temp-dir dir
+    ;; A file named review.txt would map to the built-in review command.
+    (with-temp-file (expand-file-name "review.txt" dir) (insert "custom review"))
+    (let ((gptel-agent-harness-commands--custom-commands nil)
+          (orig (symbol-function 'gptel-agent-harness-commands-review)))
+      (let ((defined (gptel-agent-harness-commands-load-custom dir)))
+        ;; Nothing defined, and the built-in review is untouched.
+        (should (null defined))
+        (should (eq (symbol-function 'gptel-agent-harness-commands-review) orig))))))
+
+(ert-deftest gptel-agent-harness-test-custom-command-runs ()
+  "Test an invoked custom command spawns a buffer with substituted prompt."
+  (gptel-agent-harness-test--with-temp-dir dir
+    (with-temp-file (expand-file-name "trun.txt" dir)
+      (insert "Explain code in ${path}. Focus: $ARGUMENTS"))
+    (let ((gptel-agent-harness-commands--custom-commands nil)
+          (gptel-send-called nil))
+      (gptel-agent-harness-commands-load-custom dir)
+      (unwind-protect
+          (cl-letf (((symbol-function 'gptel-get-tool)
+                     (lambda (name) (intern (format "tool-%s" name))))
+                    ((symbol-function 'gptel-agent-update) #'ignore)
+                    ((symbol-function 'gptel-send)
+                     (lambda () (setq gptel-send-called t)))
+                    ((symbol-function 'gptel--update-status)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'gptel)
+                     (lambda (buf-name &optional _p _i _int)
+                       (get-buffer-create buf-name))))
+            (let ((buf (gptel-agent-harness-commands-trun "concurrency")))
+              (should (buffer-live-p buf))
+              (should (string-match-p "gptel-agent-trun" (buffer-name buf)))
+              (with-current-buffer buf
+                (should gptel-use-tools)
+                (should (eq gptel-temperature 0))
+                (should (string-match-p "Explain code in" gptel-system-prompt))
+                (should (string-match-p "Focus: concurrency" gptel-system-prompt))
+                (should gptel-send-called)
+                (should (string-match-p "Proceed with the task"
+                                        (buffer-string))))
+              (kill-buffer buf)))
+        (fmakunbound 'gptel-agent-harness-commands-trun)))))
+
 ;;;; Generate Session Title Guard Tests
 
 (ert-deftest gptel-agent-harness-test-generate-title-guards ()
