@@ -3,6 +3,7 @@
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
+;; Assisted-by: Kiro-cli:claude-opus-4-8
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
 ;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel-agent "0.0.1"))
