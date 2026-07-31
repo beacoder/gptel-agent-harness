@@ -128,9 +128,10 @@ Returns the FSM object for the compaction request."
   (let* ((compact-prompt (or (and (local-variable-p 'gptel-agent-compact-prompt)
                                   gptel-agent-compact-prompt)
                              (gptel-agent-harness--read-compact-prompt)))
-         ;; Disable tools and reasoning for the compaction request
+         ;; Disable tools/context/reasoning for the compaction request
          (gptel-include-reasoning nil)
          (gptel-use-tools nil)
+         (gptel-use-context nil)
          (gptel-stream nil)
          ;; Send entire buffer content as the prompt
          (content (buffer-substring-no-properties (point-min) (point-max)))
@@ -498,7 +499,9 @@ region is active, uses region content instead of full buffer."
     (goto-char (point-max))
     (insert "Summarize current conversation.\n")
     (gptel--update-status " Summarizing..." 'warning)
-    (let ((gptel-use-tools nil)
+    ;; Disable tools/context/reasoning for the summary request
+    (let ((gptel-include-reasoning nil)
+          (gptel-use-tools nil)
           (gptel-use-context nil)
           (gptel-stream nil))
       (gptel-request conversation
