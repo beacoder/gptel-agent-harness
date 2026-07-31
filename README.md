@@ -1,6 +1,6 @@
 # gptel-agent-harness
 
-An extension to `gptel-agent` that makes it behave like a reliable coding agent (similar to OpenCode). 
+An extension to `gptel-agent` that makes it behave like a reliable coding agent (similar to OpenCode).
 It adds completion supervision, context management, session persistence, tool result caching,  custom agents and predefined commands.
 
 ## Features
