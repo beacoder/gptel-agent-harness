@@ -132,11 +132,11 @@ Returns the FSM object for the compaction request."
          (gptel-include-reasoning nil)
          (gptel-use-tools nil)
          (gptel-use-context nil)
-         (gptel-stream nil)
          ;; Send entire buffer content as the prompt
          (content (buffer-substring-no-properties (point-min) (point-max)))
          (fsm (gptel-request content
                 :system compact-prompt
+                :stream nil
                 :buffer (current-buffer)
                 :position (point-max-marker)
                 :transforms nil
@@ -502,8 +502,7 @@ region is active, uses region content instead of full buffer."
     ;; Disable tools/context/reasoning for the summary request
     (let ((gptel-include-reasoning nil)
           (gptel-use-tools nil)
-          (gptel-use-context nil)
-          (gptel-stream nil))
+          (gptel-use-context nil))
       (gptel-request conversation
         :system system-prompt
         :stream nil
