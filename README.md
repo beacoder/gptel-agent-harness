@@ -10,7 +10,7 @@ An extension to `gptel-agent` that makes it behave like a reliable coding agent 
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
 - **Tool result caching** — Caches Glob/Grep/Read results with deduplication. Repeated identical tool calls within the same epoch return a short pointer instead of full content, saving tokens. Invalidated by file mtime, TTL, or write-through on Edit/Write/Insert.
 - **Custom agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
-- **Commands** — Project initialization, code review, conversation summary, and manual compaction.
+- **Commands** — Project initialization, code review, conversation summary, and manual compaction, plus user-defined commands auto-discovered from prompt files.
 
 ## Installation
 
@@ -132,8 +132,30 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-commands-review` | Code review (uncommitted, commit, branch, or PR) |
 | `gptel-agent-harness-commands-summary` | Summarize conversation (full buffer or region) |
 | `gptel-agent-harness-commands-compact-buffer` | Manually compact the current buffer |
+| `gptel-agent-harness-commands-load-custom` | (Re)discover custom commands from the custom dir |
 | `gptel-agent-harness-restore-session` | Restore a saved session |
 | `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
+
+## Custom Commands
+
+Drop a `NAME.txt` prompt file into `gptel-agent-harness-commands-custom-dir`
+(default: `prompts/commands/`) and it becomes the interactive command
+`gptel-agent-harness-commands-NAME`. The file contents are used as the agent's
+system prompt, with two placeholders substituted:
+
+- `${path}` → the current project root
+- `$ARGUMENTS` → optional free-text the command reads interactively
+
+Discovery runs when the package loads. After adding or renaming a file, run
+`M-x gptel-agent-harness-commands-load-custom` to pick it up without restarting.
+
+- `gptel-agent-harness-commands-custom-dir` — Directory scanned for `*.txt`
+  command prompts (default: `prompts/commands/`).
+- Names are sanitized to be symbol-safe (`Fix Bug!.txt` → `…-commands-fix-bug`).
+- A file whose derived name matches an existing built-in command (e.g.
+  `review.txt`) is skipped so built-ins are never clobbered.
+
+An example `explain` command ships in `prompts/commands/explain.txt`.
 
 ## Enhanced Tools
 
@@ -165,6 +187,7 @@ site-lisp/
 ├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT test suite
 ├── prompts/                        # Prompt templates
+│   └── commands/                   # Auto-discovered custom command prompts
 └── agents/                         # Agent definition files
 ```
 
