@@ -64,6 +64,10 @@ reports the error.  INFO is the request info plist."
                   (buffer-name buf)))
      ;; API error — resp is nil
      ((null resp)
+      (plist-put info :error
+                 (or (plist-get info :error)
+                     (format "Compaction failed: %s"
+                             (plist-get info :status))))
       (with-current-buffer buf
         (gptel--update-status
          (format " Error: %s" (plist-get info :status)) 'error))
