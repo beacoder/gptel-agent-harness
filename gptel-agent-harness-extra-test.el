@@ -3,6 +3,7 @@
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
+;; Assisted-by: gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
 ;; Keywords: programming, convenience, ai, agent
