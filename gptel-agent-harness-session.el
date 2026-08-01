@@ -273,13 +273,17 @@ Returns the preview buffer."
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert-file-contents file)
-        ;; Parse local variables for metadata display
-        (goto-char (point-min))
+        ;; Parse local variables for metadata display.  The block is
+        ;; appended at the END of the file by auto-save, so search
+        ;; backward: the conversation may quote ";; Local Variables:"
+        ;; itself.
         (let (metadata)
-          (when (search-forward "\n;; Local Variables:" nil t)
+          (goto-char (point-max))
+          (when (search-backward "\n;; Local Variables:\n" nil t)
             (let ((start (match-beginning 0)))
-              (forward-line 1)
-              (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
+              (goto-char (match-end 0))
+              (while (and (looking-at ";; \\([^:]+\\): \\(.*\\)")
+                          (not (looking-at ";; End:")))
                 (let ((name (string-trim (match-string 1)))
                       (val (match-string 2)))
                   (push (cons name val) metadata))
@@ -418,13 +422,19 @@ This opens the file, enables `gptel-mode', and restores all state."
     (insert-file-contents session-file)
     (setq major-mode 'markdown-mode)
     (when (fboundp 'markdown-mode) (markdown-mode))
-    ;; Manually parse and apply local variables, then strip the block
+    ;; Manually parse and apply local variables, then strip the block.
+    ;; The block is appended at the END of the file by auto-save, so
+    ;; search backward from point-max: the conversation itself may
+    ;; contain ";; Local Variables:" (e.g. quoted source code), and
+    ;; matching the first occurrence would truncate the conversation
+    ;; and discard all restored state.
     (save-excursion
-      (goto-char (point-min))
-      (when (search-forward "\n;; Local Variables:" nil t)
+      (goto-char (point-max))
+      (when (search-backward "\n;; Local Variables:\n" nil t)
         (let ((start (match-beginning 0)))
-          (forward-line 1)
-          (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
+          (goto-char (match-end 0))
+          (while (and (looking-at ";; \\([^:]+\\): \\(.*\\)")
+                      (not (looking-at ";; End:")))
             (let* ((var-name (string-trim (match-string 1)))
                    (val-str (match-string 2))
                    (var-sym (intern var-name)))
@@ -446,8 +456,13 @@ This opens the file, enables `gptel-mode', and restores all state."
                             gptel--backend-name gptel--known-backends
                             nil nil #'equal)))
         (setq-local gptel-backend backend)))
-    ;; Restore tools from saved tool names when no preset handles it
-    (when (and (bound-and-true-p gptel--tool-names) (not gptel--preset))
+    ;; Restore tools from saved tool names when no preset handles it.
+    ;; Fall back to this path when a preset was recorded but cannot be
+    ;; resolved (e.g. harness presets not registered yet), so tools are
+    ;; not silently lost.
+    (when (and (bound-and-true-p gptel--tool-names)
+               (or (not gptel--preset)
+                   (not (gptel-get-preset gptel--preset))))
       (when-let* ((tools (cl-loop for tname in gptel--tool-names
                                    for tool = (with-demoted-errors
                                                   "gptel-agent-harness: %S"
