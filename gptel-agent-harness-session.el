@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
-;; Assisted-by: Kiro-cli:claude-opus-4-8
+;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;;
 ;; This file is not part of GNU Emacs.
