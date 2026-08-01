@@ -1,7 +1,7 @@
 # gptel-agent-harness
 
 An extension to `gptel-agent` that makes it behave like a reliable coding agent (similar to OpenCode).
-It adds completion supervision, context management, session persistence, tool result caching,  opencode agent and predefined commands.
+It adds completion supervision, context management, session persistence, opencode agent and more.
 
 ## Features
 
@@ -10,6 +10,7 @@ It adds completion supervision, context management, session persistence, tool re
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
 - **Tool result caching** — Caches Glob/Grep/Read results with deduplication. Repeated identical tool calls within the same epoch return a short pointer instead of full content, saving tokens. Invalidated by file mtime, TTL, or write-through on Edit/Write/Insert.
+- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval (catastrophic/destructive/dangerous) that respects `gptel-confirm-tool-calls`, session-scoped allow/deny, and automatic Edit/Write/Insert snapshots with undo.
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Commands** — Project initialization, code review, conversation summary, and manual compaction, plus user-defined commands auto-discovered from prompt files.
 
@@ -176,17 +177,88 @@ Invalidation: file mtime changes, TTL expiry (directories), and write-through on
 - `M-x gptel-agent-harness-cache-stats` — Show hit/miss/dedup counts.
 - `M-x gptel-agent-harness-cache-clear` — Clear cache for current buffer.
 
+## Safety
+
+The safety layer (`gptel-agent-harness-safety.el`) is enabled automatically by
+`gptel-agent-harness-mode`. It adds guards on top of gptel's own tool
+confirmation (which still runs first and is controlled by
+`gptel-confirm-tool-calls`).
+
+### Forbidden Paths
+
+Read/Glob/Grep/Edit/Insert/Write operations whose expanded path matches
+`gptel-agent-harness-safety-forbidden-paths` are rejected with an error before
+any side effect. Bash commands referencing such paths are blocked as well.
+
+### Bash Timeout
+
+Asynchronous Bash commands are killed after
+`gptel-agent-harness-safety-bash-timeout` seconds (default: 120) and report a
+timeout error instead of hanging the agent FSM. Set to nil to disable.
+
+### Tiered Bash Approval
+
+Bash commands are classified into three tiers:
+
+| Tier | Examples | Behavior |
+|------|----------|----------|
+| Catastrophic | `rm -rf /`, `mkfs`, `dd if=`, `shutdown`, `reboot`, `> /dev/sdX` | Always refused, never prompted, cannot be overridden by any setting |
+| Destructive | `sudo`, `pkill`, `killall` | Run without prompting; refused only when the approval policy is `block` |
+| Dangerous | `rm -rf <dir>`, `git push --force`, `git reset --hard`, `chmod -R 777`, `chown -R`, `su -`, `tar --remove-files` | Subject to the approval policy |
+
+`gptel-agent-harness-safety-bash-approval` (default `confirm`):
+- `confirm` — dangerous commands are confirmed with the user, unless
+  `gptel-confirm-tool-calls` is nil, in which case the user's opt-out of
+  confirmation is respected and the command runs without prompting
+  (catastrophic commands are still refused).
+- `block` — dangerous and destructive commands are refused without asking.
+- nil — no approval prompts at all (catastrophic commands are still refused).
+
+### Session Allow/Deny
+
+When a dangerous command is prompted, `read-multiple-choice` offers:
+- `y` — run once
+- `n` — deny once
+- `a` — always allow this command for the current session
+- `d` — always deny this command for the current session
+
+Decisions are remembered per session buffer.
+`M-x gptel-agent-harness-safety-clear-session` resets them.
+
+### Edit Undo
+
+Every Edit/Write/Insert tool call snapshots the target file (new files are
+recorded so undo can remove them) before modification.
+`M-x gptel-agent-harness-undo-last-edit` restores the most recent snapshot;
+calling it repeatedly walks back further. If a restore fails the snapshot is
+kept so the call can be retried. `M-x gptel-agent-harness-undo-history` shows
+the snapshot stack.
+
+- `gptel-agent-harness-safety-undo-depth` — Max snapshots kept per session buffer (default: 50).
+- `gptel-agent-harness-safety-backup-dir` — Snapshot storage directory (default: `temporary-file-directory`/`gptel-agent-harness-undo/`).
+
+### Options
+
+- `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("/mnt/")`).
+- `gptel-agent-harness-safety-bash-timeout` — Max Bash runtime in seconds (default: 120, nil disables).
+- `gptel-agent-harness-safety-bash-approval` — Approval policy: nil / `confirm` / `block`.
+- `gptel-agent-harness-safety-bash-dangerous-patterns` — Prompted tier (respects `gptel-confirm-tool-calls`).
+- `gptel-agent-harness-safety-bash-destructive-patterns` — Never-prompt tier.
+- `gptel-agent-harness-safety-bash-catastrophic-patterns` — Always-blocked tier.
+
 ## File Structure
 
 ```
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
 ├── gptel-agent-harness-cache.el    # Tool result caching with deduplication
+├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval, edit undo
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
 ├── gptel-agent-harness-tools.el    # Enhanced tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
 ├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
-├── gptel-agent-harness-test.el     # ERT test suite
+├── gptel-agent-harness-test.el     # ERT tests: core supervision/context/commands
+├── gptel-agent-harness-extra-test.el # ERT tests: safety, tools, cache
 ├── prompts/                        # Prompt templates
 │   └── commands/                   # Auto-discovered custom command prompts
 └── agents/                         # Agent definition files
