@@ -40,6 +40,7 @@
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)
 (require 'gptel-agent-harness-cache)
+(require 'gptel-agent-harness-safety)
 (require 'cl-lib)
 
 ;;;; User Options
@@ -803,6 +804,7 @@ Provides completion and context supervision."
         (gptel-agent-harness-tools-enable)
         (gptel-agent-harness-agent-enable)
         (gptel-agent-harness-cache-enable)
+        (gptel-agent-harness-safety-enable)
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
         (when (boundp 'gptel-mode-map)
@@ -825,6 +827,7 @@ Provides completion and context supervision."
     (gptel-agent-harness-agent-disable)
     (gptel-agent-harness-tools-disable)
     (gptel-agent-harness-cache-disable)
+    (gptel-agent-harness-safety-disable)
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
     (when (boundp 'gptel-mode-map)
