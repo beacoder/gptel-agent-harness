@@ -1656,6 +1656,50 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
         (should (= (length gptel-tools) 3))
         (kill-buffer (current-buffer))))))
 
+(ert-deftest gptel-agent-harness-test-restore-session-local-vars-in-content ()
+  "Restore must use the trailing local-vars block, not an earlier
+occurrence quoted in the conversation.
+Conversations can contain \";; Local Variables:\" inside quoted source
+code; parsing the first match truncates the conversation and discards
+all saved state."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-session-dir temp-dir)
+          (session-file (expand-file-name "test_260723100000.md" temp-dir)))
+      ;; Conversation content that itself quotes a local-vars block
+      (with-temp-file session-file
+        (insert "Conversation start.\n")
+        (insert "```elisp\n")
+        (insert ";; Local Variables:\n")
+        (insert ";; package-lint-main-file: \"foo.el\"\n")
+        (insert ";; End:\n")
+        (insert "```\n")
+        (insert "Conversation end.\n")
+        ;; The real trailing block appended by auto-save
+        (insert "\n;; Local Variables:\n")
+        (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
+        (insert ";; gptel-model: \"gpt-5-mini\"\n")
+        (insert ";; gptel--tool-names: (\"Glob\" \"Grep\" \"Read\")\n")
+        (insert ";; End:\n"))
+      (cl-letf (((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-mode)
+                 (lambda (&optional arg)
+                   (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name) (list :name name :function #'ignore)))
+                ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
+        (gptel-agent-harness-restore-session session-file)
+        ;; Full conversation preserved — nothing truncated
+        (should (string-match-p "Conversation start" (buffer-string)))
+        (should (string-match-p "Conversation end" (buffer-string)))
+        ;; Trailing block stripped, quoted one kept
+        (should (string-match-p "package-lint-main-file" (buffer-string)))
+        (should-not (string-match-p "^;; End:\n\\'" (buffer-string)))
+        ;; Local variables from the trailing block applied
+        (should (equal gptel-agent-harness--project-dir "/tmp/proj"))
+        (should (equal gptel-model "gpt-5-mini"))
+        (should (= (length gptel-tools) 3))
+        (kill-buffer (current-buffer))))))
+
 ;;;; Read Compact Prompt Tests
 
 ;;;; Preview Session Tests
