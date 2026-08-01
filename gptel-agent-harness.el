@@ -195,17 +195,23 @@ Sub-agent FSMs use `gptel-agent-request--handlers' instead of
                gptel-agent-harness-max-nudges))))
 
 ;;;; Context Window Management
-(defun gptel-agent-harness--model-name ()
-  "Return current model name."
-  (cond ((symbolp gptel-model)
-         (symbol-name gptel-model))
-        ((stringp gptel-model)
-         gptel-model)
-        (t "")))
+(defun gptel-agent-harness--model-name (&optional fsm)
+  "Return the model name for FSM, or the current buffer's if FSM is nil.
+Prefers the model recorded in FSM's info (set by gptel at request
+time), falling back to the dynamic `gptel-model' so callers without
+an FSM (e.g. tests) keep working."
+  (let ((model (or (and fsm (plist-get (gptel-fsm-info fsm) :model))
+                   gptel-model)))
+    (cond ((symbolp model)
+           (symbol-name model))
+          ((stringp model)
+           model)
+          (t ""))))
 
-(defun gptel-agent-harness--context-window ()
-  "Return current model context window."
-  (let ((model (gptel-agent-harness--model-name)))
+(defun gptel-agent-harness--context-window (&optional fsm)
+  "Return the context window for FSM's model, or the current buffer's.
+See `gptel-agent-harness--model-name' for the model resolution."
+  (let ((model (gptel-agent-harness--model-name fsm)))
     (or
      (cdr (seq-find
            (lambda (entry) (string-match-p (car entry) model))
@@ -386,7 +392,7 @@ Applies the calibration factor from `gptel-agent-harness--token-calibration'."
                           1.0))
          (estimated (gptel-agent-harness--context-tokens-from-data fsm))
          (calibrated (* estimated calibration)))
-    (/ calibrated (float (gptel-agent-harness--context-window)))))
+    (/ calibrated (float (gptel-agent-harness--context-window fsm)))))
 
 (defun gptel-agent-harness--update-token-calibration (&rest _)
   "Update token calibration factor using the LLM-reported input tokens.
@@ -603,7 +609,7 @@ Also stores the raw (uncalibrated) estimate for calibration."
                               gptel-agent-harness--token-calibration)
                             1.0))
            (calibrated (* raw-estimate calibration))
-           (ratio (/ calibrated (float (gptel-agent-harness--context-window)))))
+           (ratio (/ calibrated (float (gptel-agent-harness--context-window fsm)))))
       (gptel-agent-harness--with-fsm-buffer fsm
         (setq gptel-agent-harness--context-ratio ratio)
         (setq gptel-agent-harness--last-raw-estimate raw-estimate)
