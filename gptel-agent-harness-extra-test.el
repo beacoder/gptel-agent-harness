@@ -238,6 +238,118 @@ top-level-p) see them."
      :type 'error)
     (should-not called)))
 
+;;;; Plan-Mode Read-Only Guard Tests
+
+(defmacro gptel-agent-harness-test-safety--with-plan-mode (plan-p plan-file &rest body)
+  "Run BODY with plan-mode state bound.
+PLAN-P non-nil sets `gptel-agent-harness--mode' to `plan', PLAN-FILE
+sets `gptel-agent-harness--plan-file' (both buffer-local)."
+  (declare (indent 2) (debug (form form body)))
+  `(gptel-agent-harness-test--with-buffer buf
+     (with-current-buffer buf
+       (setq-local gptel-agent-harness--mode (if ,plan-p 'plan 'build))
+       (setq-local gptel-agent-harness--plan-file ,plan-file))
+     (with-current-buffer buf
+       ,@body)))
+
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-blocks-writes ()
+  "Plan mode refuses Edit/Write/Insert/Mkdir except on the plan file."
+  (let ((plan-file "/tmp/proj/PLAN.md"))
+    (gptel-agent-harness-test-safety--with-plan-mode t plan-file
+      ;; Edit on a non-plan file is blocked.
+      (let ((called nil))
+        (should-error
+         (gptel-agent-harness-safety--edit-guard
+          (lambda (&rest _) (setq called t)) "/tmp/proj/src.el" "a" "b" nil)
+         :type 'error)
+        (should-not called))
+      ;; Write on a non-plan file is blocked.
+      (let ((called nil))
+        (should-error
+         (gptel-agent-harness-safety--write-guard
+          (lambda (&rest _) (setq called t)) "/tmp/proj/" "src.el" "x")
+         :type 'error)
+        (should-not called))
+      ;; Insert on a non-plan file is blocked.
+      (let ((called nil))
+        (should-error
+         (gptel-agent-harness-safety--insert-guard
+          (lambda (&rest _) (setq called t)) "/tmp/proj/src.el" 1 "x")
+         :type 'error)
+        (should-not called))
+      ;; Mkdir is always blocked in plan mode.
+      (let ((called nil))
+        (should-error
+         (gptel-agent-harness-safety--mkdir-guard
+          (lambda (&rest _) (setq called t)) "/tmp/proj" "newdir")
+         :type 'error)
+        (should-not called))
+      ;; The plan file itself remains writable.
+      (let ((called nil))
+        (gptel-agent-harness-safety--edit-guard
+         (lambda (&rest _) (setq called t)) plan-file "a" "b" nil)
+        (should called))
+      (let ((called nil))
+        (gptel-agent-harness-safety--write-guard
+         (lambda (&rest _) (setq called t)) "/tmp/proj/" "PLAN.md" "x")
+        (should called)))))
+
+(ert-deftest gptel-agent-harness-test-safety-build-mode-allows-writes ()
+  "Build mode does not restrict write tools."
+  (gptel-agent-harness-test-safety--with-plan-mode nil nil
+    (let ((called nil))
+      (gptel-agent-harness-safety--edit-guard
+       (lambda (&rest _) (setq called t)) "/tmp/proj/src.el" "a" "b" nil)
+      (should called))
+    (let ((called nil))
+      (gptel-agent-harness-safety--mkdir-guard
+       (lambda (&rest _) (setq called t)) "/tmp/proj" "newdir")
+      (should called))))
+
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-blocks-bash ()
+  "Plan mode allows read-only Bash but refuses mutating commands."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    ;; Read-only inspection commands are allowed.
+    (dolist (cmd '("ls /tmp" "git status" "git diff HEAD" "cat /etc/hostname"
+                   "grep -r foo /tmp" "cd /tmp && ls"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should (car result))
+        (should-not (cdr result))))
+    ;; Forbidden paths are still refused even when the command is read-only.
+    (let ((result (gptel-agent-harness-test-safety--run-bash-advice "cat /mnt/secret")))
+      (should-not (car result))
+      (should (string-match-p "forbidden" (or (cdr result) ""))))
+    ;; Mutating commands are refused, with a plan-mode message.
+    (dolist (cmd '("rm -rf /tmp/cache" "touch /tmp/x" "mkdir -p /tmp/x"
+                   "echo hi > /tmp/x" "git commit -m x" "git push origin main"
+                   "git -C /tmp commit -m x" "git --no-pager push"
+                   "sudo apt-get update"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should-not (car result))
+        (should (string-match-p "plan mode" (or (cdr result) "")))))
+    ;; Unknown/arbitrary commands are refused (not on the whitelist).
+    (let ((result (gptel-agent-harness-test-safety--run-bash-advice
+                   "some-custom-tool --do-thing")))
+      (should-not (car result))
+      (should (string-match-p "plan mode" (or (cdr result) ""))))))
+
+(ert-deftest gptel-agent-harness-test-safety-build-mode-allows-bash ()
+  "Build mode Bash commands pass through the plan-mode check."
+  (gptel-agent-harness-test-safety--with-plan-mode nil nil
+    (let ((result (gptel-agent-harness-test-safety--run-bash-advice "ls /tmp")))
+      (should (car result))
+      (should-not (cdr result)))))
+
+(ert-deftest gptel-agent-harness-test-set-mode-refuses-forbidden-plan-file ()
+  "Switching to plan mode refuses to create the plan file under a forbidden path."
+  (let ((gptel-agent-harness-safety-forbidden-paths '("/tmp/hm-forbidden/")))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--project-dir "/tmp/hm-forbidden/proj")
+        (should-error (gptel-agent-harness-set-mode 'plan) :type 'error)
+        (should-not (file-exists-p "/tmp/hm-forbidden/proj/PLAN.md"))
+        (should-not (eq gptel-agent-harness--mode 'plan))))))
+
 ;;;; Bash Approval Tier Tests
 
 (defun gptel-agent-harness-test-safety--run-bash-advice (command &optional ask-fn)
