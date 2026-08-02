@@ -115,7 +115,11 @@
   (unless (fboundp 'gptel-agent-update)
     (fset 'gptel-agent-update (lambda () nil)))
   (unless (fboundp 'gptel--update-status)
-    (fset 'gptel--update-status (lambda (&rest _) nil))))
+    (fset 'gptel--update-status (lambda (&rest _) nil)))
+  (unless (fboundp 'gptel-get-preset)
+    (fset 'gptel-get-preset (lambda (_name) nil)))
+  (unless (fboundp 'gptel--apply-preset)
+    (fset 'gptel--apply-preset (lambda (_preset &optional _setter) nil))))
 
 ;;;; Test Helpers
 
@@ -804,6 +808,10 @@ Covers:
           (should (equal gptel-agent-harness-agent--orig-dirs orig-dirs))
           ;; Function overridden
           (should (advice-member-p #'gptel-opencode-agent 'gptel-agent))
+          ;; Sub-agent model advice installed
+          (should (advice-member-p
+                   #'gptel-agent-harness-agent--apply-subagent-settings
+                   'gptel-agent--task))
           ;; Second enable preserves originals
           (gptel-agent-harness-agent-enable)
           (should (equal gptel-agent-harness-agent--orig-dirs orig-dirs))
@@ -813,6 +821,9 @@ Covers:
           (should (equal gptel-agent-dirs orig-dirs))
           (when orig-agent
             (should (eq (symbol-function 'gptel-agent) orig-agent)))
+          (should-not (advice-member-p
+                       #'gptel-agent-harness-agent--apply-subagent-settings
+                       'gptel-agent--task))
           (should-not gptel-agent-harness-tools--orig-glob)
           (should-not gptel-agent-harness-tools--orig-grep)
           (should-not gptel-agent-harness-agent--orig-dirs)
@@ -827,6 +838,83 @@ Covers:
       (setq gptel-agent-harness-tools--orig-grep nil))))
 
 ;;;; FSM Helper Tests (buffer, agentic-p, top-level-p, with-fsm-buffer)
+
+
+(ert-deftest gptel-agent-harness-test-subagent-model-backend ()
+  "Test `gptel-agent-harness-agent--apply-subagent-settings' binds model/backend."
+  ;; Both set: harness keys appended AFTER existing preset so they win
+  (let ((gptel-agent-harness-subagent-backend "cheap-backend")
+        (gptel-agent-harness-subagent-model "cheap-model")
+        (gptel-agent-preset '(:temperature 0.5))
+        (captured :unset))
+    (gptel-agent-harness-agent--apply-subagent-settings
+     (lambda (&rest _) (setq captured gptel-agent-preset))
+     nil "subagent" "desc" "prompt")
+    (should (equal captured
+                   '(:temperature 0.5 :backend "cheap-backend" :model "cheap-model"))))
+  ;; Harness model wins over existing preset model: harness keys are
+  ;; appended last, and gptel applies preset keys in order (last wins)
+  (let ((gptel-agent-harness-subagent-backend nil)
+        (gptel-agent-harness-subagent-model "cheap-model")
+        (gptel-agent-preset '(:model "other-model"))
+        (captured :unset))
+    (gptel-agent-harness-agent--apply-subagent-settings
+     (lambda (&rest _) (setq captured gptel-agent-preset))
+     nil "subagent" "desc" "prompt")
+    (should (equal captured '(:model "other-model" :model "cheap-model")))
+    (when (fboundp 'gptel--apply-preset)
+      (let ((applied nil))
+        (gptel--apply-preset captured
+                             (lambda (sym val)
+                               (when (eq sym 'gptel-model)
+                                 (setq applied val))))
+        (should (equal applied "cheap-model")))))
+  ;; Symbol backend converted to string
+  (let ((gptel-agent-harness-subagent-backend 'cheap-backend)
+        (gptel-agent-harness-subagent-model nil)
+        (gptel-agent-preset nil)
+        (captured :unset))
+    (gptel-agent-harness-agent--apply-subagent-settings
+     (lambda (&rest _) (setq captured gptel-agent-preset))
+     nil "subagent" "desc" "prompt")
+    (should (equal captured '(:backend "cheap-backend"))))
+  ;; Empty strings are ignored
+  (let ((gptel-agent-harness-subagent-backend "")
+        (gptel-agent-harness-subagent-model "")
+        (gptel-agent-preset nil)
+        (captured :unset))
+    (gptel-agent-harness-agent--apply-subagent-settings
+     (lambda (&rest _) (setq captured gptel-agent-preset))
+     nil "subagent" "desc" "prompt")
+    (should (equal captured nil)))
+  ;; Nothing set: passes through `gptel-agent-preset' unchanged (no copy)
+  (let ((gptel-agent-harness-subagent-backend nil)
+        (gptel-agent-harness-subagent-model nil)
+        (gptel-agent-preset '(:temperature 0.5))
+        (captured :unset))
+    (gptel-agent-harness-agent--apply-subagent-settings
+     (lambda (&rest _) (setq captured gptel-agent-preset))
+     nil "subagent" "desc" "prompt")
+    (should (eq captured gptel-agent-preset))))
+
+(ert-deftest gptel-agent-harness-test-subagent-preset-not-mutated ()
+  "Test merging never mutates a registered preset plist."
+  (let* ((gptel-agent-harness-subagent-backend "cheap-backend")
+         (gptel-agent-harness-subagent-model "cheap-model")
+         (orig '(:model "preset-model"))
+         (registered orig)
+         (gptel-agent-preset 'registered)
+         (captured :unset))
+    (cl-letf (((symbol-function 'gptel-get-preset)
+               (lambda (_name) registered)))
+      (gptel-agent-harness-agent--apply-subagent-settings
+       (lambda (&rest _) (setq captured gptel-agent-preset))
+       nil "subagent" "desc" "prompt"))
+    (should (equal captured
+                   '(:model "preset-model"
+                            :backend "cheap-backend"
+                            :model "cheap-model")))
+    (should (equal registered orig))))
 
 (ert-deftest gptel-agent-harness-test-fsm-helpers ()
   "Test `--buffer', `--agentic-p', `--top-level-p', `--with-fsm-buffer'."
@@ -873,7 +961,10 @@ Covers:
 
 (defun gptel-agent-harness-test--position-aware-inject-prompt
     (_backend data new-prompt &optional position)
-  "Test stub for `gptel--inject-prompt' honoring POSITION."
+  "Test stub for `gptel--inject-prompt' honoring POSITION.
+
+DATA is the request payload plist, NEW-PROMPT is the message or
+message list to inject, and POSITION is the insertion index."
   (let* ((msgs (or (plist-get data :messages) []))
          (new (if (keywordp (car-safe new-prompt))
                   (list new-prompt)
@@ -970,7 +1061,8 @@ Covers:
         (should-error (gptel-agent-harness-set-mode "nonsense"))))))
 
 (ert-deftest gptel-agent-harness-test-inject-pending-top-level-only ()
-  "Without backend info (prompt still being assembled) nothing is
+  "Test that a request without backend info gets nothing injected.
+Without backend info (prompt still being assembled) nothing is
 injected, and the queue is preserved for the top-level request."
   (cl-letf (((symbol-function 'gptel--inject-prompt)
              #'gptel-agent-harness-test--position-aware-inject-prompt))
@@ -1969,7 +2061,8 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
         (kill-buffer (current-buffer))))))
 
 (ert-deftest gptel-agent-harness-test-restore-session-local-vars-in-content ()
-  "Restore must use the trailing local-vars block, not an earlier
+  "Test restore with a trailing local-vars block in the session.
+Restore must use the trailing local-vars block, not an earlier
 occurrence quoted in the conversation.
 Conversations can contain \";; Local Variables:\" inside quoted source
 code; parsing the first match truncates the conversation and discards
