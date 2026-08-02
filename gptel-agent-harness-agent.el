@@ -67,6 +67,86 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
   :type '(repeat directory)
   :group 'gptel-agent-harness)
 
+;;;; Sub-agent Backend/Model
+
+(defcustom gptel-agent-harness-subagent-backend nil
+  "Backend used for sub-agent requests, or nil to inherit the main agent's.
+
+Sub-agents are spawned by the `Agent' tool.  When non-nil, they use
+this backend instead of the one active in the main agent buffer, so a
+cheaper backend can serve delegated work.  The value is a backend
+name as registered with gptel (e.g. \"DeepSeek\").  Takes precedence
+over `gptel-agent-preset'; an explicit backend in the sub-agent
+definition file's frontmatter still wins."
+  :type '(choice (const :tag "Inherit main agent backend" nil)
+                 (string :tag "Backend name"))
+  :group 'gptel-agent-harness)
+
+(defcustom gptel-agent-harness-subagent-model nil
+  "Model used for sub-agent requests, or nil to inherit the main agent's.
+
+Sub-agents are spawned by the `Agent' tool.  When non-nil, they use
+this (typically smaller/cheaper) model instead of the one active in
+the main agent buffer.  Takes precedence over `gptel-agent-preset';
+an explicit model in the sub-agent definition file's frontmatter
+still wins."
+  :type '(choice (const :tag "Inherit main agent model" nil)
+                 (string :tag "Model name")
+                 (symbol :tag "Model symbol"))
+  :group 'gptel-agent-harness)
+
+(defun gptel-agent-harness-agent--subagent-spec ()
+  "Return the harness sub-agent preset spec, or nil if unset.
+
+Builds a plist with `:backend'/`:model' keys from
+`gptel-agent-harness-subagent-backend'/`gptel-agent-harness-subagent-model'.
+Symbol backends are converted to strings (backend names are stored as
+strings in gptel's backend registry) and empty strings are ignored."
+  (let ((backend gptel-agent-harness-subagent-backend)
+        (model gptel-agent-harness-subagent-model))
+    (when (and backend (symbolp backend))
+      (setq backend (symbol-name backend)))
+    (when (stringp backend)
+      (setq backend (and (not (string-empty-p backend)) backend)))
+    (when (stringp model)
+      (setq model (and (not (string-empty-p model)) model)))
+    (when (or backend model)
+      (nconc (and backend (list :backend backend))
+             (and model (list :model model))))))
+
+(defun gptel-agent-harness-agent--apply-subagent-settings
+    (orig-fn main-cb agent-type description prompt)
+  "Apply harness sub-agent backend/model around ORIG-FN.
+
+ORIG-FN is `gptel-agent--task'.  When
+`gptel-agent-harness-subagent-backend' or
+`gptel-agent-harness-subagent-model' is set, binds `gptel-agent-preset'
+to a spec that forces those values onto every sub-agent request.
+The harness keys are appended after any existing `gptel-agent-preset'
+settings so they take precedence (`gptel--apply-preset' applies keys
+in order, last one wins), and the existing preset is copied before
+merging so registered presets are never mutated.  When neither
+option is set, calls ORIG-FN unchanged.
+
+MAIN-CB is the callback to return a value to the main loop,
+AGENT-TYPE is the name of the agent, DESCRIPTION is a short
+description of the task, and PROMPT is the task instruction for the
+sub-agent; all are passed through to ORIG-FN unchanged."
+  (let ((gptel-agent-preset gptel-agent-preset))
+    (when-let* ((spec (gptel-agent-harness-agent--subagent-spec)))
+      (setq gptel-agent-preset
+            (nconc (and gptel-agent-preset
+                        (if (symbolp gptel-agent-preset)
+                            ;; Resolve preset name; nil if not found.
+                            (copy-sequence (gptel-get-preset gptel-agent-preset))
+                          ;; Only merge proper plists; other types (e.g.
+                          ;; strings, dotted lists) are not valid preset
+                          ;; specs here.
+                          (and (proper-list-p gptel-agent-preset)
+                               (copy-sequence gptel-agent-preset))))
+                   spec)))
+    (funcall orig-fn main-cb agent-type description prompt)))
+
 ;;;; Agent Registry
 
 (defvar gptel-agent-harness-agent--defined-agents nil
@@ -150,6 +230,9 @@ Only registers presets that haven't been registered yet."
     (unless gptel-agent-harness-agent--orig-fn
       (setq gptel-agent-harness-agent--orig-fn (symbol-function 'gptel-agent)))
     (advice-add 'gptel-agent :override #'gptel-opencode-agent))
+  (when (fboundp 'gptel-agent--task)
+    (advice-add 'gptel-agent--task
+                :around #'gptel-agent-harness-agent--apply-subagent-settings))
   (advice-add 'gptel-agent-update :after #'gptel-agent-harness-agent--register-preset))
 
 (defun gptel-agent-harness-agent-disable ()
@@ -160,6 +243,8 @@ Only registers presets that haven't been registered yet."
   (when gptel-agent-harness-agent--orig-fn
     (advice-remove 'gptel-agent #'gptel-opencode-agent)
     (setq gptel-agent-harness-agent--orig-fn nil))
+  (advice-remove 'gptel-agent--task
+                 #'gptel-agent-harness-agent--apply-subagent-settings)
   (advice-remove 'gptel-agent-update #'gptel-agent-harness-agent--register-preset))
 
 (provide 'gptel-agent-harness-agent)
