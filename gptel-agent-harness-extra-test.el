@@ -359,7 +359,7 @@ provided.  Returns (RAN . ERROR-MSG): RAN non-nil if ORIG-FN was
 invoked, ERROR-MSG the callback string otherwise."
   (let (ran err)
     (cl-letf (((symbol-function 'gptel-agent-harness-safety--ask-approval)
-               (or ask-fn (lambda (_cmd) ((error "Ask called unexpectedly"))))))
+               (or ask-fn (lambda (_cmd) (error "Ask called unexpectedly")))))
       (gptel-agent-harness-safety--execute-bash-advice
        (lambda (_cb _cmd) (setq ran t) nil)
        (lambda (msg) (setq err msg))
@@ -452,7 +452,7 @@ invoked, ERROR-MSG the callback string otherwise."
                           gptel-agent-harness-safety--session-allow)))
         ;; second call: no ask, runs
         (let ((result (gptel-agent-harness-test-safety--run-bash-advice
-                       "git reset --hard HEAD" (lambda (_cmd) ((error "Asked again"))))))
+                       "git reset --hard HEAD" (lambda (_cmd) (error "Asked again")))))
           (should (car result))
           (should-not (cdr result)))))))
 
@@ -470,7 +470,7 @@ invoked, ERROR-MSG the callback string otherwise."
                           gptel-agent-harness-safety--session-deny)))
         ;; second call: no ask, rejected
         (let ((result (gptel-agent-harness-test-safety--run-bash-advice
-                       "chmod -R 777 /tmp/x" (lambda (_cmd) ((error "Asked again"))))))
+                       "chmod -R 777 /tmp/x" (lambda (_cmd) (error "Asked again")))))
           (should-not (car result))
           (should (cdr result)))))))
 
