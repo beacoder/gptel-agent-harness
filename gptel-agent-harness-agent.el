@@ -103,12 +103,24 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
            (with-current-buffer gptel-buf
              (setq default-directory project-dir)
              (gptel-agent-update)
-             (gptel--apply-preset
-              ',func-name
-              (lambda (sym val) (set (make-local-variable sym) val))))))
+             (gptel-agent-harness-agent--apply-preset-buffer-local ',func-name))))
        (cl-pushnew '(,func-name . ,agent-name)
                    gptel-agent-harness-agent--defined-agents
                    :test #'equal))))
+
+(defun gptel-agent-harness-agent--apply-preset-buffer-local (preset)
+  "Apply PRESET buffer-locally, respecting global `gptel-confirm-tool-calls'.
+If PRESET does not explicitly set confirm-tool-calls, kill the buffer-local
+binding so the global value takes effect."
+  (when (or (not (memq (type-of preset) '(symbol string)))
+            (gptel-get-preset preset))
+    (gptel--apply-preset
+     preset (lambda (sym val) (set (make-local-variable sym) val)))
+    (let ((spec (if (memq (type-of preset) '(symbol string))
+                    (gptel-get-preset preset)
+                  preset)))
+      (unless (and (listp spec) (plist-member spec :confirm-tool-calls))
+        (kill-local-variable 'gptel-confirm-tool-calls)))))
 
 ;; Define `gptel-opencode-agent' at load time.
 (gptel-agent-harness-agent--define opencode-agent nil)
