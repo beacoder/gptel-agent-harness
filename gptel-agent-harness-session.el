@@ -39,6 +39,7 @@
 
 (require 'gptel)
 (require 'gptel-agent)
+(require 'gptel-agent-harness-agent)
 (require 'cl-lib)
 
 ;; Defined in gptel-agent-harness.el, loaded after this file.
@@ -448,9 +449,7 @@ This opens the file, enables `gptel-mode', and restores all state."
     ;; gptel-mode's built-in restore only fires for file-visiting buffers.
     ;; Since session buffers are not file-visiting, manually restore state.
     (when gptel--preset
-      (when (gptel-get-preset gptel--preset)
-        (gptel--apply-preset
-         gptel--preset (lambda (sym val) (set (make-local-variable sym) val)))))
+      (gptel-agent-harness-agent--apply-preset-buffer-local gptel--preset))
     (when gptel--backend-name
       (when-let* ((backend (alist-get
                             gptel--backend-name gptel--known-backends
