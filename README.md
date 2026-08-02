@@ -5,15 +5,16 @@ It adds completion supervision, context management, session persistence, opencod
 
 ## Features
 
-- **Completion supervision** — Prevents agents from stopping prematurely by injecting verification nudges before allowing terminal states.
+- **Completion supervision** — Prevents agents from stopping prematurely.
 - **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts.
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
 - **Tool result caching** — Caches Glob/Grep/Read results with deduplication.
-- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval (catastrophic/destructive/dangerous) that respects `gptel-confirm-tool-calls`.
+- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval that respects `gptel-confirm-tool-calls`.
 - **Build/Plan mode** — Per-buffer agent modes (default: build).
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
-- **Commands** — Project initialization, code review, conversation summary, and manual compaction, plus user-defined commands auto-discovered from prompt files.
+- **Sub-agent model selection** — Enable sub-agents to use a different model than the main agent.
+- **Commands** — Project initialization, code review, conversation summary, manual compaction and user-defined commands.
 
 ## Installation
 
@@ -41,6 +42,8 @@ It adds completion supervision, context management, session persistence, opencod
   ;; Add custom model context windows
   (add-to-list 'gptel-agent-harness-context-windows
                '("openai/gpt-oss-120b" . 128000))
+  (setq gptel-agent-harness-subagent-model "deepseek-v4-flash")   ; cheap model
+  (setq gptel-agent-harness-subagent-backend nil)                 ; inherit backend
   ;; Optional keybindings
   (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
   (global-set-key (kbd "C-c g m") #'gptel-agent-harness-toggle-mode)
@@ -141,6 +144,24 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-commands-load-custom` | (Re)discover custom commands from the custom dir |
 | `gptel-agent-harness-restore-session` | Restore a saved session |
 | `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
+
+## Sub-Agent Model/Backend
+
+The main agent usually runs a strong (and expensive) model, while `Agent`
+tool sub-agents do narrower delegated work where a smaller, cheaper model
+suffices. The harness can force a different model and backend onto every
+sub-agent request:
+
+- `gptel-agent-harness-subagent-model` — Model for sub-agents (default: `nil`
+  = inherit the main agent's model). Set to a string or symbol, e.g.
+  `"deepseek-v4-flash"`.
+- `gptel-agent-harness-subagent-backend` — Backend name for sub-agents
+  (default: `nil` = inherit the main agent's backend), e.g. `"DeepSeek"`.
+
+```elisp
+(setq gptel-agent-harness-subagent-model "deepseek-v4-flash")   ; cheap model
+(setq gptel-agent-harness-subagent-backend nil)                 ; inherit backend
+```
 
 ## Custom Commands
 
