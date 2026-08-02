@@ -42,6 +42,7 @@
 (require 'gptel-agent)
 (require 'gptel)
 (require 'cl-lib)
+(require 'project)
 
 ;; Silence byte-compiler — defined in gptel-agent.el
 (defvar gptel-agent--agents)
