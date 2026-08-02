@@ -40,6 +40,9 @@
 (defvar gptel-agent-harness-compact-prompt-file)
 (declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
 
+;; Defined in gptel-agent-harness.el, loaded after this file.
+(defvar gptel-agent-harness--nudge-count)
+
 (defun gptel-agent-harness-commands--run-post-funcs (info)
   "Call all post-funcs stored in INFO's :post plist and clear them.
 Each function is called with INFO as its argument."
