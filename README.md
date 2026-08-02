@@ -5,12 +5,13 @@ It adds completion supervision, context management, session persistence, opencod
 
 ## Features
 
-- **Completion supervision** — Prevents agents from stopping prematurely by injecting verification nudges before allowing terminal states. Resets on tool progress.
-- **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts, displays ratio in mode-line.
+- **Completion supervision** — Prevents agents from stopping prematurely by injecting verification nudges before allowing terminal states.
+- **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts.
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
-- **Tool result caching** — Caches Glob/Grep/Read results with deduplication. Repeated identical tool calls within the same epoch return a short pointer instead of full content, saving tokens. Invalidated by file mtime, TTL, or write-through on Edit/Write/Insert.
-- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval (catastrophic/destructive/dangerous) that respects `gptel-confirm-tool-calls`, session-scoped allow/deny, and automatic Edit/Write/Insert snapshots with undo.
+- **Tool result caching** — Caches Glob/Grep/Read results with deduplication.
+- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval (catastrophic/destructive/dangerous) that respects `gptel-confirm-tool-calls`.
+- **Build/Plan mode** — Per-buffer agent modes (default: build).
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Commands** — Project initialization, code review, conversation summary, and manual compaction, plus user-defined commands auto-discovered from prompt files.
 
@@ -42,6 +43,7 @@ It adds completion supervision, context management, session persistence, opencod
                '("openai/gpt-oss-120b" . 128000))
   ;; Optional keybindings
   (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
+  (global-set-key (kbd "C-c g m") #'gptel-agent-harness-toggle-mode)
   (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
   (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
   (global-set-key (kbd "C-c g u") #'gptel-agent-harness-commands-summary)
@@ -130,6 +132,8 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | Command | Description |
 |---------|-------------|
 | `gptel-opencode-agent` | Start an OpenCode-like agent session |
+| `gptel-agent-harness-toggle-mode` | Toggle build/plan mode in the current gptel buffer |
+| `gptel-agent-harness-set-mode` | Set the agent mode explicitly (`build` or `plan`) |
 | `gptel-agent-harness-commands-initialize` | Create/update AGENTS.md for a project |
 | `gptel-agent-harness-commands-review` | Code review (uncommitted, commit, branch, or PR) |
 | `gptel-agent-harness-commands-summary` | Summarize conversation (full buffer or region) |
@@ -246,6 +250,31 @@ the snapshot stack.
 - `gptel-agent-harness-safety-bash-destructive-patterns` — Never-prompt tier.
 - `gptel-agent-harness-safety-bash-catastrophic-patterns` — Always-blocked tier.
 
+## Build/Plan Mode
+
+Each gptel buffer has an agent mode, `build` or `plan`, defaulting to **build**.
+Plan mode is a read-only planning phase: the agent may inspect the codebase and
+write its plan to a dedicated plan file, but cannot modify anything else.
+
+### Switching Modes
+
+```
+M-x gptel-agent-harness-toggle-mode     ; toggle build ↔ plan
+M-x gptel-agent-harness-set-mode RET build|plan   ; set explicitly
+```
+
+The mode-line shows `[Build]`/`[Plan]` (with a tooltip) immediately before the
+`[Ctx:...]` context indicator.
+
+### Options
+
+- `gptel-agent-harness-plan-file-name` — Plan file name (default: `PLAN.md`).
+- `gptel-agent-harness-plan-mode-subagent-reminder` — READ-ONLY reminder
+  template injected into sub-agent requests while plan mode is active (`%s` is
+  replaced with the plan file path).
+- `gptel-agent-harness-safety-plan-readonly-bash-commands` — First-word
+  whitelist of Bash commands allowed during plan mode.
+
 ## File Structure
 
 ```
@@ -261,6 +290,7 @@ site-lisp/
 ├── gptel-agent-harness-extra-test.el # ERT tests: safety, tools, cache
 ├── prompts/                        # Prompt templates
 │   └── commands/                   # Auto-discovered custom command prompts
+├── rules/                          # Agent rules (task-completion-rules.md)
 └── agents/                         # Agent definition files
 ```
 
