@@ -42,6 +42,7 @@
 (require 'gptel-agent-harness-cache)
 (require 'gptel-agent-harness-safety)
 (require 'cl-lib)
+(require 'format-spec)
 
 ;; Silence byte-compiler — defined in gptel-agent-tools.el
 (defvar gptel-agent-request--handlers)
