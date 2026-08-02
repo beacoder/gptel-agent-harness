@@ -869,6 +869,318 @@ Covers:
         (gptel-agent-harness--nudge fsm)
         (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))))
 
+;;;; Build/Plan Mode Tests
+
+(defun gptel-agent-harness-test--position-aware-inject-prompt
+    (_backend data new-prompt &optional position)
+  "Test stub for `gptel--inject-prompt' honoring POSITION."
+  (let* ((msgs (or (plist-get data :messages) []))
+         (new (if (keywordp (car-safe new-prompt))
+                  (list new-prompt)
+                new-prompt))
+         (pos (or position (length msgs))))
+    (plist-put data :messages
+               (vconcat (substring msgs 0 pos) new (substring msgs pos)))))
+
+(ert-deftest gptel-agent-harness-test-mode-switch-queues-prompts ()
+  "Switching modes queues the correct prompts for the next request."
+  (gptel-agent-harness-test--with-temp-dir proj-dir
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--project-dir proj-dir)
+        ;; Default is build mode with an empty queue.
+        (should (eq gptel-agent-harness--mode 'build))
+        (should (null gptel-agent-harness--pending-prompts))
+        ;; Switch to plan → plan.txt + plan-mode.txt queued.
+        (gptel-agent-harness-toggle-mode)
+        (should (eq gptel-agent-harness--mode 'plan))
+        (should (= 2 (length gptel-agent-harness--pending-prompts)))
+        (should (string-match-p "Plan Mode"
+                                (car gptel-agent-harness--pending-prompts)))
+        (should (string-match-p "Plan mode is active"
+                                (nth 1 gptel-agent-harness--pending-prompts)))
+        ;; Plan file created and ${planInfo} replaced with its path.
+        (let ((plan-file (expand-file-name "PLAN.md" proj-dir)))
+          (should (file-exists-p plan-file))
+          (should (equal gptel-agent-harness--plan-file plan-file))
+          (should (string-match-p (regexp-quote plan-file)
+                                  (nth 1 gptel-agent-harness--pending-prompts)))
+          (should-not (string-match-p "\\${planInfo}"
+                                      (nth 1 gptel-agent-harness--pending-prompts))))
+        ;; Switch back to build → only build-switch.txt queued.
+        (gptel-agent-harness-toggle-mode)
+        (should (eq gptel-agent-harness--mode 'build))
+        (should (= 1 (length gptel-agent-harness--pending-prompts)))
+        (should (string-match-p "operational mode has changed"
+                                (car gptel-agent-harness--pending-prompts)))))))
+
+(ert-deftest gptel-agent-harness-test-inject-pending-prompts ()
+  "Pending mode prompts are injected before the user request, once."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((user-msg (list :role "user" :content "my request"))
+               (messages (vector (list :role "user" :content "history")
+                                 user-msg))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-send--handlers
+                     :messages messages)))
+          ;; Mirror `gptel--realize-query', which sets :backend in the FSM info.
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (let ((final (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                  :messages)))
+            (should (= 4 (length final)))
+            ;; Injected prompts precede the user's request, which stays last.
+            (should (equal (aref final 3) user-msg))
+            (should (string-match-p "Plan Mode"
+                                    (plist-get (aref final 1) :content)))
+            (should (string-match-p "Plan mode is active"
+                                    (plist-get (aref final 2) :content))))
+          ;; Queue consumed; a second call injects nothing.
+          (with-current-buffer buf
+            (should (null gptel-agent-harness--pending-prompts)))
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (should (= 4 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages)))))))))
+
+(ert-deftest gptel-agent-harness-test-set-mode-accepts-string ()
+  "`gptel-agent-harness-set-mode' accepts interactive string input."
+  (gptel-agent-harness-test--with-temp-dir proj-dir
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--project-dir proj-dir)
+        ;; Interactive `S' prompts yield strings, not symbols.
+        (gptel-agent-harness-set-mode "plan")
+        (should (eq gptel-agent-harness--mode 'plan))
+        (should (= 2 (length gptel-agent-harness--pending-prompts)))
+        ;; Case-insensitive: "BUILD"/"PLAN" also work.
+        (gptel-agent-harness-set-mode "BUILD")
+        (should (eq gptel-agent-harness--mode 'build))
+        (should (= 1 (length gptel-agent-harness--pending-prompts)))
+        (gptel-agent-harness-set-mode "Plan")
+        (should (eq gptel-agent-harness--mode 'plan))
+        (gptel-agent-harness-set-mode 'build)
+        (should (eq gptel-agent-harness--mode 'build))
+        (should-error (gptel-agent-harness-set-mode "nonsense"))))))
+
+(ert-deftest gptel-agent-harness-test-inject-pending-top-level-only ()
+  "Without backend info (prompt still being assembled) nothing is
+injected, and the queue is preserved for the top-level request."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((messages (vector (list :role "user" :content "hi")))
+               (fsm (gptel-agent-harness-test--make-fsm buf
+                      :messages messages)))
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          ;; No backend in FSM info yet: no injection, queue preserved
+          ;; for the next top-level request.
+          (should (= 1 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages))))
+          (with-current-buffer buf
+            (should (= 2 (length gptel-agent-harness--pending-prompts)))))))))
+
+(ert-deftest gptel-agent-harness-test-inject-subagent-plan-reminder ()
+  "Sub-agent requests get a read-only reminder in plan mode.
+The pending queue is preserved for the next top-level request."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((messages (vector (list :role "user" :content "task")))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-agent-request--handlers
+                     :messages messages)))
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (let ((final (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                  :messages)))
+            (should (= 2 (length final)))
+            (let ((reminder (plist-get (aref final 0) :content)))
+              (should (string-match-p "READ-ONLY" reminder))
+              (should (string-match-p (regexp-quote
+                                       (expand-file-name "PLAN.md" proj-dir))
+                                      reminder))))
+          ;; Queue preserved for the next top-level request.
+          (with-current-buffer buf
+            (should (= 2 (length gptel-agent-harness--pending-prompts)))))))))
+
+(ert-deftest gptel-agent-harness-test-inject-subagent-reminder-once ()
+  "The plan-mode reminder is injected at most once per sub-agent FSM."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((messages (vector (list :role "user" :content "task")))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-agent-request--handlers
+                     :messages messages)))
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          ;; Multiple WAIT transitions (tool rounds) must not duplicate.
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (should (= 2 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages)))))))))
+
+(ert-deftest gptel-agent-harness-test-inject-harness-internal-none ()
+  "Harness-internal requests (default handlers) get no plan-mode reminder."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((messages (vector (list :role "user" :content "content")))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-request--handlers
+                     :messages messages)))
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          ;; Compaction/title/summary requests use gptel-request--handlers:
+          ;; they must NOT receive the plan-mode reminder.
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (should (= 1 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages)))))))))
+
+(ert-deftest gptel-agent-harness-test-inject-subagent-build-mode-none ()
+  "Sub-agent requests get no reminder in build mode."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((messages (vector (list :role "user" :content "task")))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-agent-request--handlers
+                     :messages messages)))
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir))
+          ;; Build mode (default): no injection, queue untouched.
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (should (= 1 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages))))
+          (with-current-buffer buf
+            (should (null gptel-agent-harness--pending-prompts))))))))
+
+(ert-deftest gptel-agent-harness-test-inject-pending-midflight-appends ()
+  "Mid-flight (tool round) requests get prompts appended at the end.
+Inserting between a tool call and its result would break backend
+message ordering, so the prompts go after the tool result message."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (let* ((tool-result (list :role "tool" :content "result"))
+               (messages (vector (list :role "user" :content "history")
+                                 (list :role "assistant" :content "call")
+                                 tool-result))
+               (fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-send--handlers
+                     :messages messages)))
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (with-current-buffer buf
+            (setq-local gptel-agent-harness--project-dir proj-dir)
+            (gptel-agent-harness-set-mode 'plan))
+          (gptel-agent-harness--inject-pending-prompts fsm)
+          (let ((final (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                  :messages)))
+            (should (= 5 (length final)))
+            ;; Tool result stays in place; prompts appended at the end.
+            (should (equal (aref final 2) tool-result))
+            (should (string-match-p "Plan Mode"
+                                    (plist-get (aref final 3) :content)))
+            (should (string-match-p "Plan mode is active"
+                                    (plist-get (aref final 4) :content)))))))))
+
+(ert-deftest gptel-agent-harness-test-request-injection-position ()
+  "`--request-injection-position' handles plain requests and tool rounds."
+  (gptel-agent-harness-test--with-buffer buf
+    (let ((data (list :messages (vector (list :role "user" :content "hi")))))
+      ;; Plain user request last → inject before it.
+      (should (= 0 (gptel-agent-harness--request-injection-position data))))
+    (let ((data (list :messages (vector (list :role "user" :content "a")
+                                        (list :role "user" :content "b")))))
+      (should (= 1 (gptel-agent-harness--request-injection-position data))))
+    ;; Tool result (role tool) last → append.
+    (let ((data (list :messages (vector (list :role "user" :content "a")
+                                        (list :role "tool" :content "r")))))
+      (should (= 2 (gptel-agent-harness--request-injection-position data))))
+    ;; Anthropic-style tool result (user role, list content) → append.
+    (let ((data (list :messages (vector (list :role "user" :content "a")
+                                        (list :role "user"
+                                              :content (list (list :tool_result "r")))))))
+      (should (= 2 (gptel-agent-harness--request-injection-position data))))
+    ;; Empty messages → append (position 0).
+    (let ((data (list :messages [])))
+      (should (= 0 (gptel-agent-harness--request-injection-position data))))
+    ;; OpenAI Responses container (:input) is handled too.
+    (let ((data (list :input (vector (list :role "user" :content "a")
+                                     (list :role "user" :content "req")))))
+      (should (= 1 (gptel-agent-harness--request-injection-position data))))
+    ;; Gemini container (:contents) is handled too.
+    (let ((data (list :contents (vector (list :role "user" :content "req")))))
+      (should (= 0 (gptel-agent-harness--request-injection-position data))))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-injects-pending ()
+  "WAIT transition injects pending mode prompts before firing the request."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             #'gptel-agent-harness-test--position-aware-inject-prompt))
+    (gptel-agent-harness-test--with-temp-dir proj-dir
+      (gptel-agent-harness-test--with-buffer buf
+        (with-current-buffer buf
+          (setq gptel-agent-harness--context-ratio nil)
+          (setq-local gptel-agent-harness--project-dir proj-dir)
+          (gptel-agent-harness-set-mode 'plan))
+        (let* ((fsm (gptel-agent-harness-test--make-fsm
+                     buf :backend 'test-backend
+                     :handlers gptel-send--handlers
+                     :messages (vector (list :role "user" :content "hi"))))
+               (orig-called nil)
+               (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+          ;; Mirror `gptel--realize-query', which sets :backend in the FSM info.
+          (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
+          (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
+          (should (eq orig-called 'WAIT))
+          (should (= 3 (length (plist-get (plist-get (gptel-fsm-info fsm) :data)
+                                          :messages))))
+          (with-current-buffer buf
+            (should (null gptel-agent-harness--pending-prompts))))))))
+
+(ert-deftest gptel-agent-harness-test-mode-indicator ()
+  "Test mode indicator string generation."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--mode 'build)
+      (let ((result (gptel-agent-harness--mode-indicator)))
+        (should (string-match-p "\\[Build\\]" result))
+        (should (eq (get-text-property 0 'face result) 'success)))
+      (setq gptel-agent-harness--mode 'plan)
+      (let ((result (gptel-agent-harness--mode-indicator)))
+        (should (string-match-p "\\[Plan\\]" result))
+        (should (eq (get-text-property 0 'face result) 'warning))))))
+
 (ert-deftest gptel-agent-harness-test-need-compaction-p ()
   "Test `--need-compaction-p' with all combinations."
   (gptel-agent-harness-test--with-buffer buf
