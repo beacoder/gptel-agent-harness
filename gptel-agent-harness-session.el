@@ -45,8 +45,7 @@
 ;; Defined in gptel-agent-harness.el, loaded after this file.
 (defvar gptel-agent-harness-verbose)
 
-;; Defined in gptel-request.el (loaded transitively via gptel).
-(defvar gptel--known-backends)
+;; gptel--known-backends is defined in gptel-request.el (loaded transitively via gptel).
 
 ;;;; User Options
 
