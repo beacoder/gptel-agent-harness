@@ -65,6 +65,8 @@
 
 ;; Forward declarations — defined in gptel-agent-harness.el
 (defvar gptel-agent-harness-verbose)
+(defvar gptel-agent-harness--mode)
+(defvar gptel-agent-harness--plan-file)
 
 ;; Forward declarations — defined in gptel-request.el (via gptel)
 (defvar gptel-confirm-tool-calls)
@@ -157,6 +159,24 @@ that applies even when `gptel-confirm-tool-calls' is nil."
   :type '(repeat regexp)
   :group 'gptel-agent-harness)
 
+(defcustom gptel-agent-harness-safety-plan-readonly-bash-commands
+  '("ls" "dir" "find" "grep" "rg" "egrep" "fgrep" "cat" "head" "tail"
+    "less" "more" "wc" "pwd" "echo" "printf" "date" "env" "printenv"
+    "which" "type" "file" "stat" "du" "df" "uname" "hostname" "whoami"
+    "id" "ps" "tree" "readlink" "realpath" "basename" "dirname"
+    "hexdump" "od" "strings" "sort" "uniq" "cut" "awk" "jq" "yq" "git"
+    "test" "true" "false" "seq")
+  "Bash commands allowed during plan mode's read-only phase.
+
+In plan mode the Bash tool refuses everything except commands whose
+first word is in this list and which contain no mutating constructs
+\(file redirection, `tee', `xargs', `sudo', mutating `git'
+subcommands — see `gptel-agent-harness-safety--bash-mutating-p').
+Read-only inspection (`ls', `grep', `cat', `git status', `git diff',
+...) stays available for planning; everything else is blocked."
+  :type '(repeat string)
+  :group 'gptel-agent-harness)
+
 (defcustom gptel-agent-harness-safety-undo-depth 50
   "Maximum number of file snapshots kept per session buffer."
   :type 'integer
@@ -233,26 +253,67 @@ Checks REGEX's search PATH, optional GLOB and CONTEXT-LINES."
   (gptel-agent-harness-safety--check-path path "Grep")
   (funcall orig-fn regex path glob context-lines))
 
+;;;; Plan-Mode Read-Only Guards
+
+(defun gptel-agent-harness-safety--plan-mode-active-p ()
+  "Return non-nil when the current buffer is in plan mode."
+  (and (bound-and-true-p gptel-agent-harness--mode)
+       (eq gptel-agent-harness--mode 'plan)))
+
+(defun gptel-agent-harness-safety--plan-file-p (path)
+  "Return non-nil when PATH is the plan file of the current buffer."
+  (when (and (stringp path)
+             (bound-and-true-p gptel-agent-harness--plan-file)
+             (stringp gptel-agent-harness--plan-file))
+    (string= (expand-file-name path)
+             (expand-file-name gptel-agent-harness--plan-file))))
+
+(defun gptel-agent-harness-safety--check-read-only (path tool-name)
+  "Signal an error if PATH is not writable while plan mode is active.
+TOOL-NAME names the tool for the error message.  The plan file itself
+remains writable, per the plan-mode contract; everything else is
+read-only during plan mode."
+  (when (and (gptel-agent-harness-safety--plan-mode-active-p)
+             (not (gptel-agent-harness-safety--plan-file-p path)))
+    (error "Error: %s blocked by plan mode — read-only phase. Only the plan file may be modified."
+           tool-name)))
+
+(defun gptel-agent-harness-safety--mkdir-guard (orig-fn parent name)
+  "Plan-mode guard for `gptel-agent--make-directory'; passes through to ORIG-FN.
+Refuses directory creation while plan mode is active."
+  (let ((path (expand-file-name name parent)))
+    (gptel-agent-harness-safety--check-path path "Mkdir")
+    (gptel-agent-harness-safety--check-read-only path "Mkdir"))
+  (funcall orig-fn parent name))
+
 (defun gptel-agent-harness-safety--edit-guard (orig-fn path &optional old-str new-str-or-diff diffp)
   "Path guard for `gptel-agent--edit-files'; passes through to ORIG-FN.
 Checks PATH, the file to edit with OLD-STR/NEW-STR-OR-DIFF (or DIFFP),
-before applying the change."
+before applying the change.  Also refuses edits while plan mode is
+active, except for the plan file itself."
   (gptel-agent-harness-safety--check-path path "Edit")
+  (gptel-agent-harness-safety--check-read-only path "Edit")
   (gptel-agent-harness-safety--snapshot-file path "Edit")
   (funcall orig-fn path old-str new-str-or-diff diffp))
 
 (defun gptel-agent-harness-safety--insert-guard (orig-fn path line-number new-str)
   "Path guard for `gptel-agent--insert-in-file'; passes through to ORIG-FN.
-Checks PATH, the file receiving NEW-STR at LINE-NUMBER, before inserting."
+Checks PATH, the file receiving NEW-STR at LINE-NUMBER, before inserting.
+Also refuses inserts while plan mode is active, except for the plan
+file itself."
   (gptel-agent-harness-safety--check-path path "Insert")
+  (gptel-agent-harness-safety--check-read-only path "Insert")
   (gptel-agent-harness-safety--snapshot-file path "Insert")
   (funcall orig-fn path line-number new-str))
 
 (defun gptel-agent-harness-safety--write-guard (orig-fn path filename content)
   "Path guard for `gptel-agent--write-file'; passes through to ORIG-FN.
-Checks the target (FILENAME in PATH) before writing CONTENT."
+Checks the target (FILENAME in PATH) before writing CONTENT.  Also
+refuses writes while plan mode is active, except for the plan file
+itself."
   (let ((full-path (expand-file-name filename path)))
     (gptel-agent-harness-safety--check-path full-path "Write")
+    (gptel-agent-harness-safety--check-read-only full-path "Write")
     (gptel-agent-harness-safety--snapshot-file full-path "Write")
     (gptel-agent-harness-safety--record-absent full-path "Write")
     (funcall orig-fn path filename content)))
@@ -297,6 +358,12 @@ precedence over asking again."
              (format "Error: Bash blocked by harness safety — command references forbidden path pattern %S"
                      (gptel-agent-harness-safety--path-forbidden-p command)))
     nil)
+   ((gptel-agent-harness-safety--plan-mode-active-p)
+    (if (gptel-agent-harness-safety--bash-read-only-p command)
+        (gptel-agent-harness-safety--run-bash orig-fn callback command)
+      (funcall callback
+               "Error: Bash blocked by plan mode — read-only phase. Only read-only commands are allowed (e.g. ls, grep, cat, git status/diff); use Read/Glob/Grep to inspect instead.")
+      nil))
    ((gptel-agent-harness-safety--bash-catastrophic-p command)
     (funcall callback
              "Error: Bash blocked by harness safety — command matches a catastrophic pattern and is never allowed.")
@@ -425,6 +492,59 @@ VERDICT is `allow' or `deny'."
   "Return non-nil if COMMAND matches a catastrophic pattern."
   (gptel-agent-harness-safety--bash-match-p
    command gptel-agent-harness-safety-bash-catastrophic-patterns))
+
+;;;; Plan-Mode Read-Only Bash
+
+(defun gptel-agent-harness-safety--bash-mutating-p (command)
+  "Return non-nil when COMMAND performs writes or state changes.
+
+Detects file redirections (except fd-duplication like 2>&1), `tee',
+`xargs', `sudo', and `git' invocations with a mutating subcommand
+\(commit, push, checkout, reset, ... — flags between `git' and the
+subcommand are tolerated).  The first-word whitelist in
+`gptel-agent-harness-safety-plan-readonly-bash-commands' covers the
+remaining read-only commands; everything else is refused in plan mode
+regardless of this predicate."
+  (let ((c (downcase command)))
+    (or (string-match-p ">>" c)                 ; append
+        (string-match-p ">\\([^&]\\|&[^0-9]\\)" c) ; write, but not 2>&1
+        (string-match-p "\\btee\\b" c)
+        (string-match-p "\\bxargs\\b" c)
+        (string-match-p "\\bsudo\\b" c)
+        (string-match-p (concat "\\bgit\\b[^;&|\n]*"
+                                "\\b\\(?:add\\|commit\\|push\\|pull\\|fetch\\|"
+                                "merge\\|rebase\\|reset\\|checkout\\|switch\\|"
+                                "restore\\|clean\\|rm\\|mv\\|remote\\|config\\|"
+                                "gc\\|branch\\|tag\\|stash\\)\\b")
+                        c))))
+
+(defun gptel-agent-harness-safety--bash-first-command (command)
+  "Return the first command word of COMMAND, or nil.
+Skips leading environment assignments (VAR=...), `cd' (and its
+argument), `time', and shell separators so `cd dir && git status'
+yields `git'."
+  (let ((words (split-string command nil t))
+        (skip-next nil))
+    (catch 'found
+      (dolist (w words)
+        (cond
+         (skip-next (setq skip-next nil))
+         ((string= w "cd") (setq skip-next t))
+         ((string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*=\\S-*\\'" w) nil)
+         ((member w '("&&" ";" "|" "||" "time")) nil)
+         (t (throw 'found w))))
+      nil)))
+
+(defun gptel-agent-harness-safety--bash-read-only-p (command)
+  "Return non-nil when COMMAND is acceptable during plan mode.
+COMMAND must be free of mutating constructs and its first word must
+be a known read-only command (absolute paths are matched by
+basename)."
+  (and (not (gptel-agent-harness-safety--bash-mutating-p command))
+       (let* ((first (gptel-agent-harness-safety--bash-first-command command))
+              (name (and first (file-name-nondirectory first))))
+         (and name
+              (member name gptel-agent-harness-safety-plan-readonly-bash-commands)))))
 
 ;;;; Edit Undo
 
@@ -570,6 +690,8 @@ Advice is added with depth -100, before the caching layer at depth
               :around #'gptel-agent-harness-safety--insert-guard '((depth . -100)))
   (advice-add 'gptel-agent--write-file
               :around #'gptel-agent-harness-safety--write-guard '((depth . -100)))
+  (advice-add 'gptel-agent--make-directory
+              :around #'gptel-agent-harness-safety--mkdir-guard '((depth . -100)))
   (advice-add 'gptel-agent--execute-bash
               :around #'gptel-agent-harness-safety--execute-bash-advice))
 
@@ -587,6 +709,8 @@ Advice is added with depth -100, before the caching layer at depth
                  #'gptel-agent-harness-safety--insert-guard)
   (advice-remove 'gptel-agent--write-file
                  #'gptel-agent-harness-safety--write-guard)
+  (advice-remove 'gptel-agent--make-directory
+                 #'gptel-agent-harness-safety--mkdir-guard)
   (advice-remove 'gptel-agent--execute-bash
                  #'gptel-agent-harness-safety--execute-bash-advice))
 
