@@ -275,12 +275,13 @@ remains writable, per the plan-mode contract; everything else is
 read-only during plan mode."
   (when (and (gptel-agent-harness-safety--plan-mode-active-p)
              (not (gptel-agent-harness-safety--plan-file-p path)))
-    (error "Error: %s blocked by plan mode — read-only phase. Only the plan file may be modified."
+    (error "Error: %s blocked by plan mode (read-only phase); only the plan file may be modified"
            tool-name)))
 
 (defun gptel-agent-harness-safety--mkdir-guard (orig-fn parent name)
-  "Plan-mode guard for `gptel-agent--make-directory'; passes through to ORIG-FN.
-Refuses directory creation while plan mode is active."
+  "Plan-mode guard for `gptel-agent--make-directory'.
+Passes through to ORIG-FN with PARENT and NAME; refuses directory
+creation while plan mode is active."
   (let ((path (expand-file-name name parent)))
     (gptel-agent-harness-safety--check-path path "Mkdir")
     (gptel-agent-harness-safety--check-read-only path "Mkdir"))
