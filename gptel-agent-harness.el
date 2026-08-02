@@ -43,6 +43,9 @@
 (require 'gptel-agent-harness-safety)
 (require 'cl-lib)
 
+;; Silence byte-compiler — defined in gptel-agent-tools.el
+(defvar gptel-agent-request--handlers)
+
 ;;;; User Options
 (defgroup gptel-agent-harness nil
   "Agent execution harness for gptel."
@@ -110,6 +113,27 @@ more specific patterns before general ones."
         (buffer-string))
     (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
 
+(defconst gptel-agent-harness-plan-prompt-file
+  (expand-file-name
+   "prompts/plan.txt"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "Gptel-agent-harness not found"))))
+  "File path for the plan mode instruction prompt.")
+
+(defconst gptel-agent-harness-plan-mode-prompt-file
+  (expand-file-name
+   "prompts/plan-mode.txt"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "Gptel-agent-harness not found"))))
+  "File path for the plan mode workflow prompt.")
+
+(defconst gptel-agent-harness-build-switch-prompt-file
+  (expand-file-name
+   "prompts/build-switch.txt"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "Gptel-agent-harness not found"))))
+  "File path for the switch-back-to-build prompt.")
+
 ;;;; Internal State
 (defvar-local gptel-agent-harness--nudge-count 0
   "Current completion nudge count.")
@@ -130,6 +154,15 @@ count.  Applied to future estimations to reduce drift.")
   "Raw token estimate from the last context ratio computation.
 Used by `gptel-agent-harness--update-token-calibration' to compare
 against the actual token count reported by the API.")
+
+(defvar-local gptel-agent-harness--mode 'build
+  "Current agent mode in this buffer: `build' or `plan'.
+The default is build mode; see `gptel-agent-harness-set-mode'.")
+
+(defvar-local gptel-agent-harness--pending-prompts nil
+  "Prompt strings queued for injection into the next top-level request.
+Populated when the agent mode is switched and consumed exactly once
+by the following request; see `gptel-agent-harness--inject-pending-prompts'.")
 
 ;;;; FSM Helpers
 
@@ -598,6 +631,208 @@ Return non-nil if compaction was initiated, nil otherwise."
         ;; Compaction request initiated.
         t))))
 
+;;;; Build/Plan Mode
+
+(defcustom gptel-agent-harness-plan-file-name "PLAN.md"
+  "File name of the plan file used in plan mode.
+The file is created in the project directory when switching to
+plan mode, and its absolute path replaces the ${planInfo}
+placeholder in `gptel-agent-harness-plan-mode-prompt-file'."
+  :type 'string
+  :group 'gptel-agent-harness)
+
+(defcustom gptel-agent-harness-plan-mode-subagent-reminder
+  "<system-reminder>
+Plan mode is active for this session — you are in a READ-ONLY phase.
+STRICTLY FORBIDDEN: ANY file edits, modifications, or system changes,
+except writing to the plan file below.  You may ONLY observe, analyze,
+and plan.  This ABSOLUTE CONSTRAINT overrides ALL other instructions,
+including any subagent role instructions you have been given.
+
+Plan file: %s
+</system-reminder>"
+  "Reminder injected into sub-agent requests while plan mode is active.
+The %s placeholder is replaced with the plan file path."
+  :type 'string
+  :group 'gptel-agent-harness)
+
+(defvar-local gptel-agent-harness--plan-file nil
+  "Absolute path of the plan file for the current buffer, or nil.
+Set when switching to plan mode; see `gptel-agent-harness-set-mode'.")
+
+(defun gptel-agent-harness--plan-file-path ()
+  "Return the absolute plan file path for the current buffer.
+Uses `gptel-agent-harness--project-dir' when set, else `default-directory'."
+  (expand-file-name
+   gptel-agent-harness-plan-file-name
+   (or gptel-agent-harness--project-dir default-directory)))
+
+(defun gptel-agent-harness--ensure-plan-file ()
+  "Ensure the plan file exists, creating an empty one if missing.
+Signals an error if the plan file path is forbidden by the safety
+layer.  Returns the absolute plan file path."
+  (let ((path (gptel-agent-harness--plan-file-path)))
+    (gptel-agent-harness-safety--check-path path "Plan file")
+    (unless (file-exists-p path)
+      (make-directory (file-name-directory path) t)
+      (write-region "" nil path))
+    path))
+
+(defun gptel-agent-harness--substitute-plan-info (prompt plan-file)
+  "Replace the ${planInfo} placeholder in PROMPT with PLAN-FILE."
+  (replace-regexp-in-string "\\${planInfo}" plan-file prompt t t))
+
+(defun gptel-agent-harness--sub-agent-p (fsm)
+  "Return non-nil when FSM is a sub-agent request.
+Sub-agent requests are spawned by the Agent tool and use
+`gptel-agent-request--handlers'.  Other non-top-level requests
+\(compaction, title generation, summary) use the default
+`gptel-request--handlers' and are not sub-agents."
+  (eq (gptel-fsm-handlers fsm) gptel-agent-request--handlers))
+
+(defun gptel-agent-harness-set-mode (mode)
+  "Set agent MODE to `build' or `plan' for the current buffer.
+MODE may be a symbol or a string.
+
+Switching to plan mode queues `gptel-agent-harness-plan-prompt-file'
+and `gptel-agent-harness-plan-mode-prompt-file' for injection into the
+next top-level request.  The ${planInfo} placeholder in the latter is
+replaced with the absolute path of the plan file, which is created if
+missing in the project directory (see
+`gptel-agent-harness-plan-file-name').  Switching back to build mode
+queues `gptel-agent-harness-build-switch-prompt-file' instead.  A
+queued prompt list is consumed exactly once by the following request,
+so switching modes again before sending simply replaces the queue."
+  (interactive "SMode (build or plan): ")
+  (pcase (if (stringp mode) (intern (downcase mode)) mode)
+    ('build
+     ;; Read the prompt file BEFORE mutating state so a failure
+     ;; (e.g. missing prompt file) leaves the previous mode and
+     ;; queue intact.
+     (let ((prompt (gptel-agent-harness-commands--read-prompt-file
+                    gptel-agent-harness-build-switch-prompt-file "Build switch")))
+       (setq gptel-agent-harness--mode 'build)
+       (setq gptel-agent-harness--pending-prompts (list prompt))))
+    ('plan
+     ;; Resolve/create the plan file and read the prompt files BEFORE
+     ;; flipping the mode so any failure (forbidden path, missing
+     ;; prompt file) leaves the buffer in its previous state.
+     (let* ((plan-file (gptel-agent-harness--ensure-plan-file))
+            (prompts (list (gptel-agent-harness-commands--read-prompt-file
+                            gptel-agent-harness-plan-prompt-file "Plan")
+                           (gptel-agent-harness--substitute-plan-info
+                            (gptel-agent-harness-commands--read-prompt-file
+                             gptel-agent-harness-plan-mode-prompt-file "Plan mode")
+                            plan-file))))
+       (setq gptel-agent-harness--mode 'plan)
+       (setq gptel-agent-harness--plan-file plan-file)
+       (setq gptel-agent-harness--pending-prompts prompts)))
+    (_ (user-error "Unknown agent mode: %S" mode)))
+  (force-mode-line-update)
+  (when gptel-agent-harness-verbose
+    (message "gptel-agent-harness: switched to %s mode" mode)))
+
+(defun gptel-agent-harness-toggle-mode ()
+  "Toggle the current gptel buffer between plan and build mode.
+
+See `gptel-agent-harness-set-mode' for the queued prompt injection
+behavior."
+  (interactive)
+  (if (eq gptel-agent-harness--mode 'plan)
+      (gptel-agent-harness-set-mode 'build)
+    (gptel-agent-harness-set-mode 'plan)))
+
+(defun gptel-agent-harness--request-injection-position (data)
+  "Return the message injection position for mode prompts in DATA.
+
+Injects immediately before the user's plain-text request message when
+it is the last message, keeping the request as the final message.
+Otherwise appends at the end — this happens when switching modes
+mid-request (during tool rounds), where the last message is a tool
+result; inserting a user message between a tool call and its result
+would break backend message ordering (e.g. Anthropic tool blocks).
+
+Handles the message containers of all supported backends: :messages
+\(OpenAI-compatible/Anthropic), :input (OpenAI Responses) and
+:contents (Gemini)."
+  (let* ((messages (or (plist-get data :messages)
+                       (plist-get data :input)
+                       (plist-get data :contents)
+                       []))
+         (last (and (> (length messages) 0)
+                    (aref messages (1- (length messages))))))
+    (if (and last
+             (equal (plist-get last :role) "user")
+             (stringp (or (plist-get last :content)
+                          (plist-get last :parts))))
+        (max 0 (1- (length messages)))
+      (length messages))))
+
+(defun gptel-agent-harness--inject-pending-prompts (fsm)
+  "Inject plan-mode constraints into FSM's request data.
+
+For top-level requests, injects the queued mode-switch prompts
+\(see `gptel-agent-harness-set-mode') as separate user messages
+immediately before the user's own request message (appending when the
+last message is a tool result), and consumes the queue so they are
+sent exactly once.
+
+For sub-agent requests (FSMs using `gptel-agent-request--handlers'),
+when the buffer is in plan mode, injects
+`gptel-agent-harness-plan-mode-subagent-reminder' (with the plan file
+path substituted) so delegated agents respect the read-only phase.
+The reminder is injected at most once per sub-agent FSM, and the
+pending queue is left untouched for the next top-level request.
+
+Harness-internal requests (compaction, title generation, summary —
+the default `gptel-request--handlers') are never injected into."
+  (let* ((info (gptel-fsm-info fsm))
+         (backend (plist-get info :backend))
+         (data (plist-get info :data)))
+    (when (and backend (plistp data))
+      (condition-case err
+          (if (gptel-agent-harness--top-level-p fsm)
+              (gptel-agent-harness--with-fsm-buffer fsm
+                (when gptel-agent-harness--pending-prompts
+                  (let* ((prompts gptel-agent-harness--pending-prompts)
+                         (position (gptel-agent-harness--request-injection-position
+                                    data)))
+                    ;; Inject first, then consume the queue — if injection
+                    ;; errors, the queue survives for the next attempt.
+                    (gptel--inject-prompt
+                     backend data
+                     (mapcar (lambda (text) (list :role "user" :content text)) prompts)
+                     position)
+                    (setq gptel-agent-harness--pending-prompts nil)
+                    (when gptel-agent-harness-verbose
+                      (message "gptel-agent-harness: injected %d top-level mode prompt(s)"
+                               (length prompts))))))
+            (when (and (gptel-agent-harness--sub-agent-p fsm)
+                       (not (plist-get info :harness-injected))
+                       (gptel-agent-harness--with-fsm-buffer fsm
+                         (eq gptel-agent-harness--mode 'plan)))
+              ;; Inject first, then mark — if injection fails the flag is
+              ;; not set and the next WAIT transition retries.
+              (gptel--inject-prompt
+               backend data
+               (list (list :role "user"
+                           :content
+                           (format-spec
+                            gptel-agent-harness-plan-mode-subagent-reminder
+                            (format-spec-make
+                             ?s (gptel-agent-harness--with-fsm-buffer fsm
+                                  (or gptel-agent-harness--plan-file "")))
+                            'ignore)))
+               (gptel-agent-harness--request-injection-position data))
+              (setf (gptel-fsm-info fsm)
+                    (plist-put info :harness-injected t))
+              (when gptel-agent-harness-verbose
+                (message "gptel-agent-harness: injected plan-mode reminder into sub-agent request"))))
+        (error
+         (when gptel-agent-harness-verbose
+           (message "gptel-agent-harness: prompt injection failed — %s"
+                    (error-message-string err))))))))
+
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--update-context-ratio (fsm)
   "Compute and store context ratio for FSM's buffer.
@@ -623,8 +858,10 @@ Also stores the raw (uncalibrated) estimate for calibration."
   "Handle WAIT state transition for MACHINE.
 
 Checks context usage ratio and triggers compaction when the
-threshold is exceeded.  Returns non-nil if compaction was started,
-meaning the caller should skip its own transition, and nil otherwise.
+threshold is exceeded.  Injects any queued build/plan mode prompts
+into the outgoing request before it is sent.  Returns non-nil if
+compaction was started, meaning the caller should skip its own
+transition, and nil otherwise.
 
 ORIG-FN is the original `gptel--fsm-transition' function.
 MACHINE is the FSM machine state.
@@ -638,9 +875,13 @@ NEW-STATE is the state to transition to."
   (if (gptel-agent-harness--need-compaction-p machine)
       ;; `gptel-abort' inside --compact removes FSM from
       ;; `gptel--request-alist' and transitions it to ABRT, so
-      ;; skip the normal transition when compaction starts.
+      ;; skip the normal transition when compaction starts.  Pending
+      ;; mode prompts are preserved so the resumed request still
+      ;; receives them.
       (unless (gptel-agent-harness--compact machine)
+        (gptel-agent-harness--inject-pending-prompts machine)
         (funcall orig-fn machine new-state))
+    (gptel-agent-harness--inject-pending-prompts machine)
     (funcall orig-fn machine new-state)))
 
 (defun gptel-agent-harness--handle-terminal-state (orig-fn machine new-state)
@@ -709,6 +950,18 @@ NEW-STATE is the optional new state to transition to."
   :type 'boolean
   :group 'gptel-agent-harness)
 
+(defun gptel-agent-harness--mode-indicator ()
+  "Return a propertized string showing the current build/plan mode."
+  (let* ((plan-p (eq gptel-agent-harness--mode 'plan))
+         (queued (and plan-p gptel-agent-harness--pending-prompts))
+         (text (if plan-p " [Plan]" " [Build]")))
+    (propertize text 'face (if plan-p 'warning 'success)
+                'help-echo (if plan-p
+                               (if queued
+                                   "Agent mode: plan — plan prompts queued for the next request"
+                                 "Agent mode: plan — read-only phase; only the plan file is writable")
+                             "Agent mode: build"))))
+
 (defun gptel-agent-harness--context-ratio-indicator ()
   "Return a propertized string showing context usage ratio.
 Returns empty string if ratio is not yet computed or display is disabled."
@@ -730,12 +983,13 @@ Returns empty string if ratio is not yet computed or display is disabled."
     ""))
 
 (defvar-local gptel-agent-harness--mode-line-construct
-  '(:eval (gptel-agent-harness--context-ratio-indicator))
-  "Mode-line construct showing context usage ratio in gptel buffers.")
+  '(:eval (concat (gptel-agent-harness--mode-indicator)
+                  (gptel-agent-harness--context-ratio-indicator)))
+  "Mode-line construct showing agent mode and context usage ratio in gptel buffers.")
 (put 'gptel-agent-harness--mode-line-construct 'risky-local-variable t)
 
 (defun gptel-agent-harness--setup-mode-line ()
-  "Add context ratio indicator to mode-line for the current gptel buffer.
+  "Add agent mode and context ratio indicators to mode-line.
 Also hides `which-function-mode' display as it provides no useful info
 in gptel buffers but consumes mode-line space."
   (unless (or (memq 'gptel-agent-harness--mode-line-construct mode-line-format)
@@ -847,6 +1101,9 @@ Provides completion and context supervision."
           (setq gptel-agent-harness--context-ratio nil)
           (setq gptel-agent-harness--token-calibration 1.0)
           (setq gptel-agent-harness--last-raw-estimate nil)
+          (setq gptel-agent-harness--mode 'build)
+          (setq gptel-agent-harness--pending-prompts nil)
+          (setq gptel-agent-harness--plan-file nil)
           (force-mode-line-update))))
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
