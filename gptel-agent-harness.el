@@ -895,12 +895,6 @@ FSM terminate without interference.
 ORIG-FN is the original `gptel--fsm-transition' function.
 MACHINE is the FSM machine state.
 NEW-STATE is the state to transition to."
-  (condition-case err
-      (gptel-agent-harness--update-context-ratio machine)
-    (error
-     (when gptel-agent-harness-verbose
-       (message "gptel-agent-harness: context ratio error (terminal) — %s"
-                (error-message-string err)))))
   ;; If compaction is in progress, let the FSM terminate without
   ;; interference — don't clear the flag or nudge.  The aborted
   ;; FSM must die quietly while compaction handles the resume.
