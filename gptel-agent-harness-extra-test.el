@@ -400,13 +400,50 @@ sets `gptel-agent-harness--plan-file' (both buffer-local)."
 
 (ert-deftest gptel-agent-harness-test-set-mode-refuses-forbidden-plan-file ()
   "Switching to plan mode refuses to create the plan file under a forbidden path."
-  (let ((gptel-agent-harness-safety-forbidden-paths '("/tmp/hm-forbidden/")))
+  (let ((gptel-agent-harness-safety-forbidden-paths
+         (list (temporary-file-directory))))
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
-        (setq-local gptel-agent-harness--project-dir "/tmp/hm-forbidden/proj")
         (should-error (gptel-agent-harness-set-mode 'plan) :type 'error)
-        (should-not (file-exists-p "/tmp/hm-forbidden/proj/PLAN.md"))
+        (should-not gptel-agent-harness--plan-file)
         (should-not (eq gptel-agent-harness--mode 'plan))))))
+
+(ert-deftest gptel-agent-harness-test-cleanup-plan-file-guards-tmp ()
+  "Cleanup only deletes plan files inside the variable `temporary-file-directory'.
+The temp dir is bound to /tmp so the test is independent of the
+user's TMPDIR setting."
+  (cl-letf (((symbol-function 'temporary-file-directory)
+             (lambda () "/tmp/")))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        ;; A plan file outside the temp dir must survive cleanup, and
+        ;; the cached path must still be reset.
+        (let ((foreign-dir (make-temp-file
+                            (expand-file-name "gptel-foreign-" "~") t))
+              (foreign-file nil))
+          (unwind-protect
+              (progn
+                (setq foreign-file (expand-file-name "PLAN.md" foreign-dir))
+                (write-region "x" nil foreign-file)
+                (setq-local gptel-agent-harness--plan-file foreign-file)
+                (gptel-agent-harness--cleanup-plan-file)
+                (should (file-exists-p foreign-file))
+                (should-not gptel-agent-harness--plan-file))
+            (delete-directory foreign-dir t)))
+        ;; An owned plan file inside the temp dir is removed with its
+        ;; per-session directory.
+        (let ((own-dir (make-temp-file "gptel-own-" t))
+              (own-file nil))
+          (unwind-protect
+              (progn
+                (setq own-file (expand-file-name "PLAN.md" own-dir))
+                (write-region "x" nil own-file)
+                (setq-local gptel-agent-harness--plan-file own-file)
+                (gptel-agent-harness--cleanup-plan-file)
+                (should-not (file-exists-p own-file))
+                (should-not (file-directory-p own-dir)))
+            (when (file-directory-p own-dir)
+              (delete-directory own-dir t))))))))
 
 ;;;; Bash Approval Tier Tests
 
