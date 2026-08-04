@@ -838,6 +838,71 @@ invoked, ERROR-MSG the callback string otherwise."
     (gptel-agent-harness-tools--unregister-question)
     (should-not gptel-agent-harness-tools--question-tool)))
 
+;;;; PlanExit Tool Tests
+
+(ert-deftest gptel-agent-harness-test-plan-exit-noop-in-build-mode ()
+  "`PlanExit' is a no-op outside plan mode: no approval, no mode change."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-agent-harness--mode 'build)
+      (setq-local gptel-agent-harness--pending-prompts nil)
+      (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                 (lambda (&rest _) (error "Should not prompt outside plan mode"))))
+        (let ((result (gptel-agent-harness-tools--plan-exit)))
+          (should (string-match-p "no effect" result))
+          (should (eq gptel-agent-harness--mode 'build))
+          (should (null gptel-agent-harness--pending-prompts)))))))
+
+(ert-deftest gptel-agent-harness-test-plan-exit-approve-switches-to-build ()
+  "Approving `PlanExit' switches to build mode and queues build-switch + execute-plan prompts."
+  (gptel-agent-harness-test--with-temp-dir proj-dir
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--project-dir proj-dir)
+        (setq-local gptel-agent-harness--mode 'plan)
+        (setq-local gptel-agent-harness--plan-file
+                    (expand-file-name "PLAN.md" proj-dir))
+        (setq-local gptel-agent-harness--pending-prompts nil)
+        (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                   (lambda (&rest _) t)))
+          (let ((result (gptel-agent-harness-tools--plan-exit)))
+            (should (string-match-p "approved" result))
+            ;; Result instructs the agent to proceed, not to wait.
+            (should (string-match-p "proceed" result))
+            (should-not (string-match-p "Wait for further" result))
+            (should (eq gptel-agent-harness--mode 'build))
+            ;; Two queued user prompts: build-switch first, execute-plan second.
+            (should (= 2 (length gptel-agent-harness--pending-prompts)))
+            ;; The execute-plan message is last and names the plan file.
+            (let ((last (car (last gptel-agent-harness--pending-prompts))))
+              (should (string-match-p "Execute the plan" last))
+              (should (string-match-p "PLAN.md" last)))))))))
+
+(ert-deftest gptel-agent-harness-test-plan-exit-reject-stays-in-plan ()
+  "Rejecting `PlanExit' leaves the buffer in plan mode with nothing queued."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-agent-harness--mode 'plan)
+      (setq-local gptel-agent-harness--pending-prompts nil)
+      (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                 (lambda (&rest _) nil)))
+        (let ((result (gptel-agent-harness-tools--plan-exit)))
+          (should (string-match-p "Remain in plan mode" result))
+          (should (eq gptel-agent-harness--mode 'plan))
+          (should (null gptel-agent-harness--pending-prompts)))))))
+
+(ert-deftest gptel-agent-harness-test-plan-exit-register-unregister ()
+  "Test PlanExit tool registration and unregistration."
+  (let ((gptel-agent-harness-tools--plan-exit-tool nil)
+        (gptel--known-tools nil))
+    ;; Register
+    (gptel-agent-harness-tools--register-plan-exit)
+    (should gptel-agent-harness-tools--plan-exit-tool)
+    (should (assoc "gptel-agent" gptel--known-tools #'equal))
+    ;; Unregister
+    (gptel-agent-harness-tools--unregister-plan-exit)
+    (should-not gptel-agent-harness-tools--plan-exit-tool)))
+
 ;;;; Glob Tool Tests
 
 (ert-deftest gptel-agent-harness-test-glob-error-cases ()
