@@ -340,6 +340,64 @@ sets `gptel-agent-harness--plan-file' (both buffer-local)."
       (should (car result))
       (should-not (cdr result)))))
 
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-blocks-chained-writes ()
+  "Plan mode validates every segment, not just the first command."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    ;; A whitelisted first word must not smuggle a mutating command
+    ;; through a shell operator.
+    (dolist (cmd '("ls && rm -rf /tmp/x"
+                   "cat a; truncate -s0 b"
+                   "ls || rm x"
+                   "ls & rm x"
+                   "grep -rl foo . | xargs rm"
+                   "echo hi | tee /tmp/x"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should-not (car result))
+        (should (string-match-p "plan mode" (or (cdr result) "")))))))
+
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-blocks-substitution ()
+  "Plan mode refuses command/process substitution outright."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    (dolist (cmd '("ls $(rm x)"
+                   "echo `rm x`"
+                   "cat <(rm x)"
+                   "diff <(ls) <(ls)"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should-not (car result))
+        (should (string-match-p "plan mode" (or (cdr result) "")))))))
+
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-blocks-whitelisted-write-args ()
+  "Plan mode refuses write/exec argument forms of whitelisted commands."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    (dolist (cmd '("find . -delete"
+                   "find . -exec rm {} \\;"
+                   "find . -execdir rm {} \\;"
+                   "find . -type f -ok rm {} \\;"
+                   "find . -fprint /tmp/out"
+                   "sort -o victim in"
+                   "sort --output=victim in"
+                   ;; awk is no longer whitelisted at all.
+                   "awk 'BEGIN{system(\"rm x\")}'"
+                   "awk '{print > \"/tmp/x\"}' f"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should-not (car result))
+        (should (string-match-p "plan mode" (or (cdr result) "")))))))
+
+(ert-deftest gptel-agent-harness-test-safety-plan-mode-allows-readonly-forms ()
+  "Legitimate read-only invocations of guarded commands still pass."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    (dolist (cmd '("find . -name *.el"
+                   "find /tmp -type f"
+                   "sort in"
+                   "sort -r in"
+                   "cat a | grep b"
+                   "git log --oneline"
+                   "cd /tmp && ls -la"
+                   "FOO=bar ls"))
+      (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
+        (should (car result))
+        (should-not (cdr result))))))
+
 (ert-deftest gptel-agent-harness-test-set-mode-refuses-forbidden-plan-file ()
   "Switching to plan mode refuses to create the plan file under a forbidden path."
   (let ((gptel-agent-harness-safety-forbidden-paths '("/tmp/hm-forbidden/")))
