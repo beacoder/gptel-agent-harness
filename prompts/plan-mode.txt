@@ -8,14 +8,14 @@ You should build your plan incrementally by writing to or editing this file. NOT
 ## Plan Workflow
 
 ### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Use the subagent for exploration.
+Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Critical: In this phase you should only use the subagent for exploration.
 
 1. Focus on understanding the user's request and the code associated with their request
 
-2. **Launch subagent(s)** to efficiently explore the codebase.
+2. **Launch up to 3 subagents IN PARALLEL** (single message, multiple tool calls) to efficiently explore the codebase.
  - Use 1 subagent when the task is isolated to known files, the user provided specific file paths, or you're making a small targeted change.
  - Use multiple subagents when: the scope is uncertain, multiple areas of the codebase are involved, or you need to understand existing patterns before planning.
- - Quality over quantity - use the minimum number of subagents necessary (usually just 1)
+ - Quality over quantity - 3 subagents maximum, but you should try to use the minimum number of subagents necessary (usually just 1)
  - If using multiple subagents: Provide each with a specific search focus or area to explore. Example: One searches for existing implementations, another explores related components, a third investigates testing patterns
 
 3. After exploring the code, use the question tool to clarify ambiguities in the user request up front.
