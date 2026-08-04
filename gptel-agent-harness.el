@@ -636,9 +636,11 @@ Return non-nil if compaction was initiated, nil otherwise."
 
 (defcustom gptel-agent-harness-plan-file-name "PLAN.md"
   "File name of the plan file used in plan mode.
-The file is created in the project directory when switching to
-plan mode, and its absolute path replaces the ${planInfo}
-placeholder in `gptel-agent-harness-plan-mode-prompt-file'."
+The file is created in a per-session subdirectory of
+the variable `temporary-file-directory' when switching to plan
+mode, so sessions in the same project never share a plan file.
+Its absolute path replaces the ${planInfo} placeholder in
+`gptel-agent-harness-plan-mode-prompt-file'."
   :type 'string
   :group 'gptel-agent-harness)
 
@@ -663,10 +665,21 @@ Set when switching to plan mode; see `gptel-agent-harness-set-mode'.")
 
 (defun gptel-agent-harness--plan-file-path ()
   "Return the absolute plan file path for the current buffer.
-Uses `gptel-agent-harness--project-dir' when set, else `default-directory'."
-  (expand-file-name
-   gptel-agent-harness-plan-file-name
-   (or gptel-agent-harness--project-dir default-directory)))
+The file lives in a per-session subdirectory of
+the variable `temporary-file-directory' (named after the project
+plus a unique `make-temp-name' suffix), keeping plan files of
+concurrent sessions on the same project isolated.  Returns the
+cached `gptel-agent-harness--plan-file' when set, otherwise a
+freshly computed path — the caller stores it in that variable once
+the safety check has passed."
+  (or gptel-agent-harness--plan-file
+      (let* ((proj-dir (or gptel-agent-harness--project-dir default-directory))
+             (proj-name (file-name-nondirectory (directory-file-name proj-dir)))
+             (dir (make-temp-name
+                   (expand-file-name
+                    (format "gptel-agent-plans-%s-" proj-name)
+                    (temporary-file-directory)))))
+        (expand-file-name gptel-agent-harness-plan-file-name dir))))
 
 (defun gptel-agent-harness--ensure-plan-file ()
   "Ensure the plan file exists, creating an empty one if missing.
@@ -678,6 +691,33 @@ layer.  Returns the absolute plan file path."
       (make-directory (file-name-directory path) t)
       (write-region "" nil path))
     path))
+
+(defun gptel-agent-harness--cleanup-plan-file ()
+  "Delete the current buffer's plan file and its per-session directory.
+Only ever deletes inside the variable `temporary-file-directory':
+a stale or foreign `gptel-agent-harness--plan-file' value (e.g. from
+a session started before this feature) can never remove a file
+outside it.  Resets `gptel-agent-harness--plan-file' to nil."
+  (when-let* ((file gptel-agent-harness--plan-file)
+              (tmp-dir (temporary-file-directory)))
+    (when (and (file-exists-p file)
+               (string-prefix-p tmp-dir file))
+      (delete-file file))
+    (let ((dir (file-name-directory file)))
+      (when (and dir
+                 (string-prefix-p tmp-dir dir)
+                 (file-directory-p dir)
+                 (null (directory-files dir nil "\\`[^.]" t)))
+        (delete-directory dir)))
+    (setq gptel-agent-harness--plan-file nil)))
+
+(defun gptel-agent-harness--setup-plan-cleanup ()
+  "Delete this buffer's plan file when the buffer is killed."
+  (add-hook 'kill-buffer-hook #'gptel-agent-harness--cleanup-plan-file nil t))
+
+(defun gptel-agent-harness--teardown-plan-cleanup ()
+  "Remove the `kill-buffer-hook' plan-file cleanup from this buffer."
+  (remove-hook 'kill-buffer-hook #'gptel-agent-harness--cleanup-plan-file t))
 
 (defun gptel-agent-harness--substitute-plan-info (prompt plan-file)
   "Replace the ${planInfo} placeholder in PROMPT with PLAN-FILE."
@@ -699,7 +739,8 @@ Switching to plan mode queues `gptel-agent-harness-plan-prompt-file'
 and `gptel-agent-harness-plan-mode-prompt-file' for injection into the
 next top-level request.  The ${planInfo} placeholder in the latter is
 replaced with the absolute path of the plan file, which is created if
-missing in the project directory (see
+missing in a per-session directory under the variable
+`temporary-file-directory' (see
 `gptel-agent-harness-plan-file-name').  Switching back to build mode
 queues `gptel-agent-harness-build-switch-prompt-file' instead.  A
 queued prompt list is consumed exactly once by the following request,
@@ -725,6 +766,12 @@ so switching modes again before sending simply replaces the queue."
                             (gptel-agent-harness-commands--read-prompt-file
                              gptel-agent-harness-plan-mode-prompt-file "Plan mode")
                             plan-file))))
+       ;; Start each planning round from an empty file, but only for
+       ;; files owned by this session (inside
+       ;; `temporary-file-directory'); a legacy cached path outside
+       ;; it is left untouched.
+       (when (string-prefix-p (temporary-file-directory) plan-file)
+         (write-region "" nil plan-file nil 'silent))
        (setq gptel-agent-harness--mode 'plan)
        (setq gptel-agent-harness--plan-file plan-file)
        (setq gptel-agent-harness--pending-prompts prompts)))
@@ -1061,6 +1108,7 @@ Provides completion and context supervision."
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
+        (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness-cache--setup)
         ;; Set up for already-open gptel buffers
         (dolist (buf (buffer-list))
@@ -1069,6 +1117,7 @@ Provides completion and context supervision."
               (gptel-agent-harness--setup-mode-line)
               (gptel-agent-harness--setup-calibration)
               (gptel-agent-harness--setup-session)
+              (gptel-agent-harness--setup-plan-cleanup)
               (gptel-agent-harness-cache--setup))))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
@@ -1084,6 +1133,7 @@ Provides completion and context supervision."
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
+    (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness-cache--setup)
     ;; Clean up from all gptel buffers
     (dolist (buf (buffer-list))
@@ -1092,7 +1142,9 @@ Provides completion and context supervision."
           (gptel-agent-harness--teardown-mode-line)
           (gptel-agent-harness--teardown-calibration)
           (gptel-agent-harness--teardown-session)
+          (gptel-agent-harness--teardown-plan-cleanup)
           (gptel-agent-harness-cache--teardown)
+          (gptel-agent-harness--cleanup-plan-file)
           (setq gptel-agent-harness--context-ratio nil)
           (setq gptel-agent-harness--token-calibration 1.0)
           (setq gptel-agent-harness--last-raw-estimate nil)
