@@ -663,11 +663,34 @@ The %s placeholder is replaced with the plan file path."
   "Absolute path of the plan file for the current buffer, or nil.
 Set when switching to plan mode; see `gptel-agent-harness-set-mode'.")
 
+(defun gptel-agent-harness--plan-temp-dir ()
+  "Return a reliable temporary directory for plan files.
+For a remote `default-directory' (Tramp), returns the remote temp
+directory so plan files stay reachable by remote tools.  For a
+local directory, the function `temporary-file-directory' would
+return `default-directory' when the latter is on a mounted file
+system (e.g. WSL paths under /mnt), placing plan files outside the
+real temp directory; this helper therefore tries the variable
+`temporary-file-directory' and the TMPDIR/TMP/TEMP environment
+variables in turn, skipping any result on a mounted file system,
+and finally falls back to /tmp."
+  (if (file-remote-p default-directory)
+      (temporary-file-directory)
+    (or (cl-loop for dir in (cons (default-value 'temporary-file-directory)
+                                  (list (getenv "TMPDIR")
+                                        (getenv "TMP")
+                                        (getenv "TEMP")))
+                 when (and dir
+                           (not (and mounted-file-systems
+                                     (string-match mounted-file-systems dir))))
+                 return (file-name-as-directory dir))
+        "/tmp/")))
+
 (defun gptel-agent-harness--plan-file-path ()
   "Return the absolute plan file path for the current buffer.
 The file lives in a per-session subdirectory of
-the variable `temporary-file-directory' (named after the project
-plus a unique `make-temp-name' suffix), keeping plan files of
+`gptel-agent-harness--plan-temp-dir' (named after the project plus
+a unique `make-temp-name' suffix), keeping plan files of
 concurrent sessions on the same project isolated.  Returns the
 cached `gptel-agent-harness--plan-file' when set, otherwise a
 freshly computed path — the caller stores it in that variable once
@@ -678,7 +701,7 @@ the safety check has passed."
              (dir (make-temp-name
                    (expand-file-name
                     (format "gptel-agent-plans-%s-" proj-name)
-                    (temporary-file-directory)))))
+                    (gptel-agent-harness--plan-temp-dir)))))
         (expand-file-name gptel-agent-harness-plan-file-name dir))))
 
 (defun gptel-agent-harness--ensure-plan-file ()
@@ -694,12 +717,12 @@ layer.  Returns the absolute plan file path."
 
 (defun gptel-agent-harness--cleanup-plan-file ()
   "Delete the current buffer's plan file and its per-session directory.
-Only ever deletes inside the variable `temporary-file-directory':
-a stale or foreign `gptel-agent-harness--plan-file' value (e.g. from
+Only ever deletes inside `gptel-agent-harness--plan-temp-dir': a
+stale or foreign `gptel-agent-harness--plan-file' value (e.g. from
 a session started before this feature) can never remove a file
 outside it.  Resets `gptel-agent-harness--plan-file' to nil."
   (when-let* ((file gptel-agent-harness--plan-file)
-              (tmp-dir (temporary-file-directory)))
+              (tmp-dir (gptel-agent-harness--plan-temp-dir)))
     (when (and (file-exists-p file)
                (string-prefix-p tmp-dir file))
       (delete-file file))
@@ -768,9 +791,9 @@ so switching modes again before sending simply replaces the queue."
                             plan-file))))
        ;; Start each planning round from an empty file, but only for
        ;; files owned by this session (inside
-       ;; `temporary-file-directory'); a legacy cached path outside
-       ;; it is left untouched.
-       (when (string-prefix-p (temporary-file-directory) plan-file)
+       ;; `gptel-agent-harness--plan-temp-dir'); a legacy cached
+       ;; path outside it is left untouched.
+       (when (string-prefix-p (gptel-agent-harness--plan-temp-dir) plan-file)
          (write-region "" nil plan-file nil 'silent))
        (setq gptel-agent-harness--mode 'plan)
        (setq gptel-agent-harness--plan-file plan-file)
