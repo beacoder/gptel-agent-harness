@@ -995,7 +995,8 @@ message list to inject, and POSITION is the insertion index."
         ;; Plan file created and ${planInfo} replaced with its path.
         (let ((plan-file gptel-agent-harness--plan-file))
           (should (file-exists-p plan-file))
-          (should (string-prefix-p (temporary-file-directory) plan-file))
+          (should (string-prefix-p (gptel-agent-harness--plan-temp-dir)
+                                   plan-file))
           (should-not (file-exists-p (expand-file-name "PLAN.md" proj-dir)))
           (should (equal gptel-agent-harness--plan-file plan-file))
           (should (string-match-p (regexp-quote plan-file)
