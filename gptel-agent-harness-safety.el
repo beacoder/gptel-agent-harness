@@ -164,16 +164,29 @@ that applies even when `gptel-confirm-tool-calls' is nil."
     "less" "more" "wc" "pwd" "echo" "printf" "date" "env" "printenv"
     "which" "type" "file" "stat" "du" "df" "uname" "hostname" "whoami"
     "id" "ps" "tree" "readlink" "realpath" "basename" "dirname"
-    "hexdump" "od" "strings" "sort" "uniq" "cut" "awk" "jq" "yq" "git"
+    "hexdump" "od" "strings" "sort" "uniq" "cut" "jq" "yq" "git"
     "test" "true" "false" "seq")
   "Bash commands allowed during plan mode's read-only phase.
 
-In plan mode the Bash tool refuses everything except commands whose
-first word is in this list and which contain no mutating constructs
-\(file redirection, `tee', `xargs', `sudo', mutating `git'
-subcommands — see `gptel-agent-harness-safety--bash-mutating-p').
+In plan mode the Bash tool validates EACH segment of the command
+\(split on the shell operators && || | ; & and newlines): every
+segment must have a first word in this list and contain no mutating
+construct (file redirection, `tee', `xargs', `sudo', mutating `git'
+subcommand — see `gptel-agent-harness-safety--bash-mutating-p').
+Command and process substitution (`$(...)', backticks, `<(...)',
+`>(...)') is refused wholesale, since it can run commands that
+segmentation cannot see.  A few listed commands have write/exec modes
+that are additionally refused by argument (see
+`gptel-agent-harness-safety--bash-arg-denylist', e.g. `find -delete',
+`find -exec', `sort -o').
+
 Read-only inspection (`ls', `grep', `cat', `git status', `git diff',
-...) stays available for planning; everything else is blocked."
+...) stays available for planning; everything else is blocked.  Note
+`awk' is intentionally absent: its `system()' and in-program
+redirection cannot be proven read-only.  As a conservative
+consequence, benign commands whose quoted arguments contain shell
+operators (e.g. a grep pattern with `|') may be refused here; use the
+Read/Glob/Grep tools to inspect instead."
   :type '(repeat string)
   :group 'gptel-agent-harness)
 
@@ -536,16 +549,82 @@ yields `git'."
          (t (throw 'found w))))
       nil)))
 
+(defun gptel-agent-harness-safety--bash-has-subshell-p (command)
+  "Return non-nil for command or process substitution in COMMAND.
+Detects `$(...)', backticks, and `<(...)'/`>(...)'.  These can run
+commands that segmentation cannot see, so they are refused wholesale
+during plan mode's read-only phase."
+  (and (stringp command)
+       (string-match-p "\\$(\\|`\\|<(\\|>(" command)))
+
+(defun gptel-agent-harness-safety--bash-segments (command)
+  "Split COMMAND into command segments on shell control operators.
+Splits on && || | ; & and newlines.  Segments are whitespace-trimmed
+and empty segments dropped, so each returned string is one command
+invocation to validate independently.
+
+This is a heuristic split that is unaware of quoting: an operator
+character inside a quoted argument will still split.  That only ever
+causes a benign command to be refused (fail-closed), never a mutating
+one to be allowed."
+  (split-string command "&&\\|||\\|[;&|\n]" t "[ \t]+"))
+
+(defconst gptel-agent-harness-safety--bash-arg-denylist
+  '(("find" . ("\\(?:^\\|\\s-\\)-delete\\b"
+               "\\(?:^\\|\\s-\\)-execdir\\b"
+               "\\(?:^\\|\\s-\\)-exec\\b"
+               "\\(?:^\\|\\s-\\)-okdir\\b"
+               "\\(?:^\\|\\s-\\)-ok\\b"
+               "\\(?:^\\|\\s-\\)-fprintf?\\b"
+               "\\(?:^\\|\\s-\\)-fls\\b"))
+    ("sort" . ("\\(?:^\\|\\s-\\)-o\\b"
+               "\\(?:^\\|\\s-\\)--output\\b")))
+  "Alist of (COMMAND . REGEXPS) for mutating argument forms.
+A whitelisted COMMAND is refused in plan mode when its segment matches
+any of REGEXPS.  These cover the write/exec options of otherwise
+read-only tools (e.g. `find -delete'/`find -exec', `sort -o') that
+would bypass the first-word check.")
+
+(defun gptel-agent-harness-safety--command-args-safe-p (name segment)
+  "Return non-nil for a non-mutating invocation of NAME in SEGMENT.
+NAME is a whitelisted command; SEGMENT is a single command invocation
+\(see `gptel-agent-harness-safety--bash-segments').  Consults
+`gptel-agent-harness-safety--bash-arg-denylist'."
+  (let ((pats (cdr (assoc name gptel-agent-harness-safety--bash-arg-denylist))))
+    (not (and pats
+              (cl-some (lambda (re) (string-match-p re segment)) pats)))))
+
+(defun gptel-agent-harness-safety--bash-segment-read-only-p (segment)
+  "Return non-nil when a single command SEGMENT is read-only.
+A segment passes when it contains no mutating construct and either
+runs no command at all (only `cd'/env-assignments) or runs a
+whitelisted command with no mutating argument form."
+  (and (not (gptel-agent-harness-safety--bash-mutating-p segment))
+       (let* ((first (gptel-agent-harness-safety--bash-first-command segment))
+              (name (and first (file-name-nondirectory first))))
+         (or
+          ;; No executable in this segment (e.g. `cd dir', `FOO=bar') —
+          ;; harmless; `--bash-mutating-p' already rejected redirection.
+          (null name)
+          (and (member name gptel-agent-harness-safety-plan-readonly-bash-commands)
+               (gptel-agent-harness-safety--command-args-safe-p name segment))))))
+
 (defun gptel-agent-harness-safety--bash-read-only-p (command)
   "Return non-nil when COMMAND is acceptable during plan mode.
-COMMAND must be free of mutating constructs and its first word must
-be a known read-only command (absolute paths are matched by
-basename)."
-  (and (not (gptel-agent-harness-safety--bash-mutating-p command))
-       (let* ((first (gptel-agent-harness-safety--bash-first-command command))
-              (name (and first (file-name-nondirectory first))))
-         (and name
-              (member name gptel-agent-harness-safety-plan-readonly-bash-commands)))))
+
+COMMAND is refused outright if it contains command or process
+substitution (see `gptel-agent-harness-safety--bash-has-subshell-p').
+Otherwise EVERY segment (see `gptel-agent-harness-safety--bash-segments')
+must be read-only per
+`gptel-agent-harness-safety--bash-segment-read-only-p'.  This ensures
+chained commands like \"ls && rm -rf x\" are refused, not just the
+leading `ls'."
+  (and (stringp command)
+       (not (gptel-agent-harness-safety--bash-has-subshell-p command))
+       (let ((segments (gptel-agent-harness-safety--bash-segments command)))
+         (and segments
+              (cl-every #'gptel-agent-harness-safety--bash-segment-read-only-p
+                        segments)))))
 
 ;;;; Edit Undo
 
