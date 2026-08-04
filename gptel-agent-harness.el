@@ -744,7 +744,7 @@ behavior."
     (gptel-agent-harness-set-mode 'plan)))
 
 (defun gptel-agent-harness--request-injection-position (data)
-  "Return the message injection position for mode prompts in DATA.
+  "Return the injection position for mode-switch prompt text in DATA.
 
 Injects immediately before the user's plain-text request message when
 it is the last message, keeping the request as the final message.
