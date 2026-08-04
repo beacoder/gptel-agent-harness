@@ -368,11 +368,134 @@ Returns the user's answers as quoted key-value pairs, one per line."
                 (assoc-delete-all category gptel--known-tools #'equal)))))
     (setq gptel-agent-harness-tools--question-tool nil)))
 
+;;;; PlanExit Tool — request approval to leave plan mode
+
+;; Forward declarations — defined in gptel-agent-harness.el, which requires
+;; this file (so it cannot be required back).  All are resolved at call
+;; time, long after the main file has loaded.
+(declare-function gptel-agent-harness-set-mode "gptel-agent-harness" (mode))
+(defvar gptel-agent-harness--mode)
+(defvar gptel-agent-harness--pending-prompts)
+(defvar gptel-agent-harness--plan-file)
+
+(defcustom gptel-agent-harness-tools-plan-exit-approved-message
+  "The plan at %s has been approved, you can now edit files. Execute the plan"
+  "User message injected after the build-switch prompt when PlanExit is approved.
+
+Queued as a second user prompt (following the build-switch prompt) so
+that, on approval, the agent both learns it is now in build mode and is
+told to execute the approved plan — mirroring OpenCode's synthetic
+approval message.  The %s placeholder is replaced with the plan file
+path (or a generic description when the path is unknown)."
+  :type 'string
+  :group 'gptel-agent-harness)
+
+(defvar gptel-agent-harness-tools--plan-exit-tool nil
+  "The registered PlanExit tool object.")
+
+(defun gptel-agent-harness-tools--plan-exit-approved-p (prompt)
+  "Ask the user PROMPT (a yes/no question); return non-nil on approval.
+Uses `yes-or-no-p' in batch mode and a `read-multiple-choice' prompt
+interactively."
+  (if noninteractive
+      (yes-or-no-p (concat prompt " "))
+    (eq ?y (car (read-multiple-choice
+                 prompt
+                 '((?y "yes, switch to build")
+                   (?n "no, stay in plan")))))))
+
+(defun gptel-agent-harness-tools--plan-exit ()
+  "Request user approval to leave plan mode and switch to build mode.
+
+Runs in the session buffer (see `gptel--handle-tool-use'), so it reads
+and mutates the buffer-local agent mode directly.
+
+When the buffer is not in plan mode, this is a no-op.  Otherwise the
+user is prompted (the prompt names the plan file); on approval,
+`gptel-agent-harness-set-mode' switches the buffer to build mode — which
+queues the build-switch prompt — and this then appends
+`gptel-agent-harness-tools-plan-exit-approved-message' as a second
+queued user prompt so the agent both enters build mode and is told to
+execute the plan.  A message is returned telling the agent to proceed
+with implementation.  On rejection, the buffer stays in plan mode and
+the agent is told to keep planning."
+  (if (not (and (boundp 'gptel-agent-harness--mode)
+                (eq gptel-agent-harness--mode 'plan)))
+      "Not in plan mode; PlanExit has no effect.  Continue as normal."
+    (let* ((plan (and (boundp 'gptel-agent-harness--plan-file)
+                      gptel-agent-harness--plan-file))
+           (plan-desc (if plan (abbreviate-file-name plan) "the plan file")))
+      (if (gptel-agent-harness-tools--plan-exit-approved-p
+           (format "Plan at %s is complete.  Switch to build agent and start implementing?"
+                   plan-desc))
+          (progn
+            ;; Queues the build-switch prompt into `--pending-prompts'.
+            (gptel-agent-harness-set-mode 'build)
+            ;; Append OpenCode's "execute the plan" message as a second
+            ;; user prompt, injected right after the build-switch prompt.
+            (setq gptel-agent-harness--pending-prompts
+                  (append gptel-agent-harness--pending-prompts
+                          (list (format
+                                 gptel-agent-harness-tools-plan-exit-approved-message
+                                 plan-desc))))
+            "User approved switching to build agent.  You are now in build mode; \
+proceed to execute the approved plan.")
+        "User rejected switching to build.  Remain in plan mode: keep planning \
+and refining the plan file, and do NOT edit any other files."))))
+
+(defun gptel-agent-harness-tools--register-plan-exit ()
+  "Register the PlanExit tool with gptel."
+  (unless gptel-agent-harness-tools--plan-exit-tool
+    (setq gptel-agent-harness-tools--plan-exit-tool
+          (gptel-make-tool
+           :name "PlanExit"
+           :function #'gptel-agent-harness-tools--plan-exit
+           :description
+           "Use this tool when you have completed the planning phase and are
+ready to exit plan mode.
+
+This tool will ask the user whether they want to switch to the build
+agent and start implementing the plan.  Do NOT use the Question tool to
+ask \"Is this plan okay?\" — that is what this tool is for.
+
+Call this tool:
+- After you have written a complete plan to the plan file
+- After you have clarified any questions with the user
+- When you are confident the plan is ready for implementation
+
+Do NOT call this tool:
+- Before you have created or finalized the plan
+- If you still have unanswered questions about the implementation
+- If the user has indicated they want to continue planning
+
+On approval, the session switches to build mode (file edits become
+allowed) and you should proceed to execute the approved plan.  On
+rejection, you remain in the read-only plan phase and should continue
+refining the plan."
+           :args nil
+           :category "gptel-agent"
+           :confirm nil
+           :include t))))
+
+(defun gptel-agent-harness-tools--unregister-plan-exit ()
+  "Unregister the PlanExit tool from gptel."
+  (when gptel-agent-harness-tools--plan-exit-tool
+    (let* ((tool gptel-agent-harness-tools--plan-exit-tool)
+           (category (or (gptel-tool-category tool) "misc"))
+           (name (gptel-tool-name tool))
+           (cat-entry (assoc category gptel--known-tools #'equal)))
+      (when cat-entry
+        (setf (alist-get name (cdr cat-entry) nil 'remove #'equal) nil)
+        (unless (cdr cat-entry)
+          (setq gptel--known-tools
+                (assoc-delete-all category gptel--known-tools #'equal)))))
+    (setq gptel-agent-harness-tools--plan-exit-tool nil)))
+
 ;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
 
 (defun gptel-agent-harness-tools-enable ()
   "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions.
-Also register additional tools (Question)."
+Also register additional tools (Question, PlanExit)."
   (when (fboundp 'gptel-agent--glob)
     (unless gptel-agent-harness-tools--orig-glob
       (setq gptel-agent-harness-tools--orig-glob
@@ -383,18 +506,20 @@ Also register additional tools (Question)."
       (setq gptel-agent-harness-tools--orig-grep
             (symbol-function 'gptel-agent--grep)))
     (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep))
-  (gptel-agent-harness-tools--register-question))
+  (gptel-agent-harness-tools--register-question)
+  (gptel-agent-harness-tools--register-plan-exit))
 
 (defun gptel-agent-harness-tools-disable ()
   "Restore original `gptel-agent--glob' and `gptel-agent--grep'.
-Also unregister additional tools (Question)."
+Also unregister additional tools (Question, PlanExit)."
   (when gptel-agent-harness-tools--orig-glob
     (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
     (setq gptel-agent-harness-tools--orig-glob nil))
   (when gptel-agent-harness-tools--orig-grep
     (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
     (setq gptel-agent-harness-tools--orig-grep nil))
-  (gptel-agent-harness-tools--unregister-question))
+  (gptel-agent-harness-tools--unregister-question)
+  (gptel-agent-harness-tools--unregister-plan-exit))
 
 (provide 'gptel-agent-harness-tools)
 
