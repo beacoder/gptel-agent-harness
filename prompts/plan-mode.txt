@@ -8,30 +8,30 @@ You should build your plan incrementally by writing to or editing this file. NOT
 ## Plan Workflow
 
 ### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Critical: In this phase you should only use the explore subagent type.
+Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Use the subagent for exploration.
 
 1. Focus on understanding the user's request and the code associated with their request
 
-2. **Launch up to 3 explore agents IN PARALLEL** (single message, multiple tool calls) to efficiently explore the codebase.
- - Use 1 agent when the task is isolated to known files, the user provided specific file paths, or you're making a small targeted change.
- - Use multiple agents when: the scope is uncertain, multiple areas of the codebase are involved, or you need to understand existing patterns before planning.
- - Quality over quantity - 3 agents maximum, but you should try to use the minimum number of agents necessary (usually just 1)
- - If using multiple agents: Provide each agent with a specific search focus or area to explore. Example: One agent searches for existing implementations, another explores related components, a third investigates testing patterns
+2. **Launch subagent(s)** to efficiently explore the codebase.
+ - Use 1 subagent when the task is isolated to known files, the user provided specific file paths, or you're making a small targeted change.
+ - Use multiple subagents when: the scope is uncertain, multiple areas of the codebase are involved, or you need to understand existing patterns before planning.
+ - Quality over quantity - use the minimum number of subagents necessary (usually just 1)
+ - If using multiple subagents: Provide each with a specific search focus or area to explore. Example: One searches for existing implementations, another explores related components, a third investigates testing patterns
 
 3. After exploring the code, use the question tool to clarify ambiguities in the user request up front.
 
 ### Phase 2: Design
 Goal: Design an implementation approach.
 
-Launch general agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
+Launch subagent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
 
-You can launch up to 1 agent(s) in parallel.
+You can launch up to 1 subagent(s) in parallel.
 
 **Guidelines:**
-- **Default**: Launch at least 1 Plan agent for most tasks - it helps validate your understanding and consider alternatives
-- **Skip agents**: Only for truly trivial tasks (typo fixes, single-line changes, simple renames)
+- **Default**: Launch at least 1 subagent for most tasks - it helps validate your understanding and consider alternatives
+- **Skip subagents**: Only for truly trivial tasks (typo fixes, single-line changes, simple renames)
 
-Examples of when to use multiple agents:
+Examples of when to use multiple subagents:
 - The task touches multiple parts of the codebase
 - It's a large refactor or architectural change
 - There are many edge cases to consider
@@ -42,14 +42,14 @@ Example perspectives by task type:
 - Bug fix: root cause vs workaround vs prevention
 - Refactoring: minimal change vs clean architecture
 
-In the agent prompt:
+In the subagent prompt:
 - Provide comprehensive background context from Phase 1 exploration including filenames and code path traces
 - Describe requirements and constraints
 - Request a detailed implementation plan
 
 ### Phase 3: Review
 Goal: Review the plan(s) from Phase 2 and ensure alignment with the user's intentions.
-1. Read the critical files identified by agents to deepen your understanding
+1. Read the critical files identified by subagents to deepen your understanding
 2. Ensure that the plans align with the user's original request
 3. Use question tool to clarify any remaining questions with the user
 
