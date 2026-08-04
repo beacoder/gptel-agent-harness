@@ -510,7 +510,7 @@ VERDICT is `allow' or `deny'."
 ;;;; Plan-Mode Read-Only Bash
 
 (defun gptel-agent-harness-safety--bash-mutating-p (command)
-  "Return non-nil when COMMAND performs writes or state changes.
+  "Return non-nil when COMMAND would write or change state.
 
 Detects file redirections (except fd-duplication like 2>&1), `tee',
 `xargs', `sudo', and `git' invocations with a mutating subcommand
