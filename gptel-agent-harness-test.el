@@ -130,6 +130,8 @@
      (unwind-protect
          (progn ,@body)
        (when (buffer-live-p ,buf-var)
+         (with-current-buffer ,buf-var
+           (gptel-agent-harness--cleanup-plan-file))
          (kill-buffer ,buf-var)))))
 
 (defmacro gptel-agent-harness-test--with-temp-dir (dir-var &rest body)
@@ -991,8 +993,10 @@ message list to inject, and POSITION is the insertion index."
         (should (string-match-p "Plan mode is active"
                                 (nth 1 gptel-agent-harness--pending-prompts)))
         ;; Plan file created and ${planInfo} replaced with its path.
-        (let ((plan-file (expand-file-name "PLAN.md" proj-dir)))
+        (let ((plan-file gptel-agent-harness--plan-file))
           (should (file-exists-p plan-file))
+          (should (string-prefix-p (temporary-file-directory) plan-file))
+          (should-not (file-exists-p (expand-file-name "PLAN.md" proj-dir)))
           (should (equal gptel-agent-harness--plan-file plan-file))
           (should (string-match-p (regexp-quote plan-file)
                                   (nth 1 gptel-agent-harness--pending-prompts)))
@@ -1093,19 +1097,20 @@ The pending queue is preserved for the next top-level request."
                (fsm (gptel-agent-harness-test--make-fsm
                      buf :backend 'test-backend
                      :handlers gptel-agent-request--handlers
-                     :messages messages)))
+                     :messages messages))
+               (plan-file nil))
           (plist-put (gptel-fsm-info fsm) :backend 'test-backend)
           (with-current-buffer buf
             (setq-local gptel-agent-harness--project-dir proj-dir)
-            (gptel-agent-harness-set-mode 'plan))
+            (gptel-agent-harness-set-mode 'plan)
+            (setq plan-file gptel-agent-harness--plan-file))
           (gptel-agent-harness--inject-pending-prompts fsm)
           (let ((final (plist-get (plist-get (gptel-fsm-info fsm) :data)
                                   :messages)))
             (should (= 2 (length final)))
             (let ((reminder (plist-get (aref final 0) :content)))
               (should (string-match-p "READ-ONLY" reminder))
-              (should (string-match-p (regexp-quote
-                                       (expand-file-name "PLAN.md" proj-dir))
+              (should (string-match-p (regexp-quote plan-file)
                                       reminder))))
           ;; Queue preserved for the next top-level request.
           (with-current-buffer buf
