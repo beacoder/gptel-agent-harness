@@ -212,9 +212,20 @@ Sub-agent FSMs use `gptel-agent-request--handlers' instead of
   (eq (gptel-fsm-handlers fsm) gptel-send--handlers))
 
 (defun gptel-agent-harness--can-nudge-p (fsm)
-  "Return non-nil when nudge budget remains for FSM."
-  (< (gptel-agent-harness--get-nudges fsm)
-     gptel-agent-harness-max-nudges))
+  "Return non-nil when nudge budget remains for FSM.
+
+A dead (or missing) session buffer has NO budget: the nudge counter is
+buffer-local, so `gptel-agent-harness--inc-nudges' cannot record
+anything and `gptel-agent-harness--get-nudges' would keep reporting 0 —
+every terminal transition would be redirected to WAIT and fire another
+request, forever.  `gptel--handle-wait' does not check buffer liveness,
+so that loop would keep hitting the API after the user killed the
+buffer.  Failing closed here bounds it."
+  (let ((buf (gptel-agent-harness--buffer fsm)))
+    (and buf
+         (buffer-live-p buf)
+         (< (gptel-agent-harness--get-nudges fsm)
+            gptel-agent-harness-max-nudges))))
 
 ;;;; Completion Actions
 (defun gptel-agent-harness--nudge (fsm)
