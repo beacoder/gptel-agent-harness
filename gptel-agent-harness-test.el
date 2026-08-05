@@ -51,6 +51,16 @@
 ;; review/commands tests when running in batch mode).
 (require 'gptel-openai nil t)
 
+(defconst gptel-agent-harness-test--lv-header
+  (concat ";; Local " "Variables:")
+  "Literal local-variables header used by the session save/restore tests.
+
+Built by concatenation on purpose.  Emacs scans the last 3000 characters
+of a file for this text and tries to parse the first occurrence as the
+file's own local-variables block; a test that spelled it out verbatim
+would make every byte-compile of this file warn \"Local variables list
+is not properly terminated\".")
+
 ;;;; Stubs — minimal gptel API surface needed for testing
 ;; These provide a minimal gptel API surface when the real packages
 ;; are not available.  We use `fset' to avoid package-lint prefix errors.
@@ -231,10 +241,35 @@ top-level-p) see them."
         (gptel-agent-harness--reset-nudges fsm)
         (should (= (gptel-agent-harness--get-nudges fsm) 0))))))
 
+(ert-deftest gptel-agent-harness-test-can-nudge-p-dead-buffer ()
+  "A dead session buffer has no nudge budget.
+
+The counter is buffer-local, so on a dead buffer `--inc-nudges' records
+nothing and `--get-nudges' keeps returning 0.  Without this guard every
+terminal transition would be redirected to WAIT and fire another
+request, forever — `gptel--handle-wait' does not check buffer liveness."
+  (let ((buf (generate-new-buffer " *gptel-harness-dead*")))
+    (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
+               (lambda (_fsm) buf)))
+      (let ((fsm 'ignored)
+            (gptel-agent-harness-max-nudges 2))
+        (should (gptel-agent-harness--can-nudge-p fsm))
+        (kill-buffer buf)
+        (should-not (gptel-agent-harness--can-nudge-p fsm))
+        ;; Budget stays exhausted no matter how often we try.
+        (dotimes (_ 5) (gptel-agent-harness--inc-nudges fsm))
+        (should-not (gptel-agent-harness--can-nudge-p fsm)))))
+  ;; A missing :buffer is treated the same way.
+  (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
+             (lambda (_fsm) nil)))
+    (should-not (gptel-agent-harness--can-nudge-p 'ignored))))
+
 ;;;; Context Token Estimation from FSM Data
 
 (ert-deftest gptel-agent-harness-test-context-tokens-from-data ()
-  "Test token estimation from full prompt payload."
+  "Test token estimation from full prompt payload.
+Covers plain string content (OpenAI-style) and a list of `:text' parts
+\(Anthropic-style structured content)."
   (let ((gptel-agent-harness-verbose nil))
     (gptel-agent-harness-test--with-buffer buf
       (let ((fsm (gptel-agent-harness-test--make-fsm buf
@@ -243,7 +278,15 @@ top-level-p) see them."
                               (list :role "user" :content "hello world")
                               (list :role "assistant" :content "hi there")
                               (list :role "user" :content "do something")))))
-        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 12))))))
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 12))))
+    (gptel-agent-harness-test--with-buffer buf
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :system "sys"
+                   :messages (vector
+                              (list :role "assistant"
+                                    :content (list (list :text "part one")
+                                                   (list :text "part two")))))))
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 5))))))
 
 (ert-deftest gptel-agent-harness-test-context-tokens-includes-tools ()
   "Test token estimation includes tool definitions (schemas)."
@@ -285,18 +328,6 @@ top-level-p) see them."
         (should (> tokens-with-tools tokens-no-tools))
         ;; The difference should be substantial (tool schemas are verbose)
         (should (> (- tokens-with-tools tokens-no-tools) 10))))))
-
-(ert-deftest gptel-agent-harness-test-context-tokens-from-data-with-list-content ()
-  "Test token estimation with structured (list) content in messages."
-  (let ((gptel-agent-harness-verbose nil))
-    (gptel-agent-harness-test--with-buffer buf
-      (let ((fsm (gptel-agent-harness-test--make-fsm buf
-                   :system "sys"
-                   :messages (vector
-                              (list :role "assistant"
-                                    :content (list (list :text "part one")
-                                                   (list :text "part two")))))))
-        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 5))))))
 
 (ert-deftest gptel-agent-harness-test-context-tokens-gemini-format ()
   "Test token estimation with Gemini-style data (:contents, :systemInstruction, :parts)."
@@ -794,8 +825,6 @@ Covers:
   "Test agent override: enable overrides dirs+fn, disable restores, idempotent."
   (let ((gptel-agent-harness-agent--orig-dirs nil)
         (gptel-agent-harness-agent--orig-fn nil)
-        (gptel-agent-harness-tools--orig-glob nil)
-        (gptel-agent-harness-tools--orig-grep nil)
         (orig-dirs gptel-agent-dirs)
         (orig-glob (symbol-function 'gptel-agent--glob))
         (orig-grep (symbol-function 'gptel-agent--grep))
@@ -833,8 +862,10 @@ Covers:
           (should-not (advice-member-p
                        #'gptel-agent-harness-agent--task-callback-guard
                        'gptel-agent--task))
-          (should-not gptel-agent-harness-tools--orig-glob)
-          (should-not gptel-agent-harness-tools--orig-grep)
+          (should-not (advice-member-p #'gptel-agent-harness-tools--glob
+                                      'gptel-agent--glob))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--grep
+                                      'gptel-agent--grep))
           (should-not gptel-agent-harness-agent--orig-dirs)
           (should-not gptel-agent-harness-agent--orig-fn))
       (setq gptel-agent-dirs orig-dirs)
@@ -842,9 +873,7 @@ Covers:
       (fset 'gptel-agent--grep orig-grep)
       (when orig-agent (fset 'gptel-agent orig-agent))
       (setq gptel-agent-harness-agent--orig-dirs nil)
-      (setq gptel-agent-harness-agent--orig-fn nil)
-      (setq gptel-agent-harness-tools--orig-glob nil)
-      (setq gptel-agent-harness-tools--orig-grep nil))))
+      (setq gptel-agent-harness-agent--orig-fn nil))))
 
 ;;;; FSM Helper Tests (buffer, agentic-p, top-level-p, with-fsm-buffer)
 
@@ -928,7 +957,7 @@ Covers:
 (ert-deftest gptel-agent-harness-test-subagent-callback-guard ()
   "The sub-agent callback guard never signals and keeps the parent moving.
 An unexpected response type (vector) calls MAIN-CB with an error string;
-stream markers (`t', `(reasoning . _)') are ignored; a normal string
+stream markers (t, `(reasoning . _)') are ignored; a normal string
 passes through."
   (let ((main-cb-calls nil))
     (cl-letf (((symbol-function 'gptel-request)
@@ -943,7 +972,7 @@ passes through."
            :callback (lambda (resp _info)
                        (pcase resp
                          ((pred stringp) (funcall main-cb resp))
-                         (_ (error "pcase-no-match"))))))
+                         (_ (error "Pcase-no-match"))))))
        (lambda (result) (push result main-cb-calls))
        "subagent" "desc" "prompt"))
     (should (= 1 (length main-cb-calls)))
@@ -962,7 +991,7 @@ passes through."
            :callback (lambda (resp _info)
                        (pcase resp
                          ((pred stringp) (funcall main-cb resp))
-                         (_ (error "pcase-no-match"))))))
+                         (_ (error "Pcase-no-match"))))))
        (lambda (result) (push result main-cb-calls))
        "subagent" "desc" "prompt"))
     (should (null main-cb-calls)))
@@ -978,7 +1007,7 @@ passes through."
            :callback (lambda (resp _info)
                        (pcase resp
                          ((pred stringp) (funcall main-cb resp))
-                         (_ (error "pcase-no-match"))))))
+                         (_ (error "Pcase-no-match"))))))
        (lambda (result) (push result main-cb-calls))
        "subagent" "desc" "prompt"))
     (should (equal main-cb-calls '("output")))))
@@ -1009,7 +1038,10 @@ passes through."
 ;;;; Nudge and Compaction Helpers
 
 (ert-deftest gptel-agent-harness-test-nudge ()
-  "Test `--nudge' injects message and bumps counter."
+  "`--nudge' appends the nudge message as a user turn and bumps the counter.
+
+This is the only test asserting the injected payload; the sibling nudge
+tests cover the failure paths (malformed `:data', signalling inject)."
   (cl-letf (((symbol-function 'gptel--inject-prompt)
              (lambda (_backend data msg)
                (let* ((msgs (or (plist-get data :messages) []))
@@ -1021,8 +1053,16 @@ passes through."
                     :tools (vector (list :type "function"))
                     :messages messages))
              (orig-count (gptel-agent-harness--get-nudges fsm)))
-        (gptel-agent-harness--nudge fsm)
-        (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))))
+        (should (gptel-agent-harness--nudge fsm))
+        (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))
+        ;; The nudge lands as a trailing user message carrying the
+        ;; configured text, leaving the original turn untouched.
+        (let ((final (plist-get (plist-get (gptel-fsm-info fsm) :data) :messages)))
+          (should (= 2 (length final)))
+          (should (equal (aref final 0) (list :role "user" :content "hello")))
+          (should (equal (plist-get (aref final 1) :role) "user"))
+          (should (equal (plist-get (aref final 1) :content)
+                         gptel-agent-harness-nudge-message)))))))
 
 (ert-deftest gptel-agent-harness-test-nudge-malformed-data ()
   "`--nudge' never signals on malformed `:data' and returns nil.
@@ -1062,7 +1102,7 @@ returned.  A plist `:data' returns t."
   "`--nudge' returns nil when `gptel--inject-prompt' signals."
   (gptel-agent-harness-test--with-buffer buf
     (cl-letf (((symbol-function 'gptel--inject-prompt)
-               (lambda (&rest _) (error "boom"))))
+               (lambda (&rest _) (error "Boom"))))
       (let* ((fsm (gptel-agent-harness-test--make-fsm buf
                     :tools (vector (list :type "function"))
                     :messages (vector (list :role "user" :content "hi"))))
@@ -1176,10 +1216,10 @@ message list to inject, and POSITION is the insertion index."
         (should (eq gptel-agent-harness--mode 'build))
         (should-error (gptel-agent-harness-set-mode "nonsense"))))))
 
-(ert-deftest gptel-agent-harness-test-inject-pending-top-level-only ()
-  "Test that a request without backend info gets nothing injected.
-Without backend info (prompt still being assembled) nothing is
-injected, and the queue is preserved for the top-level request."
+(ert-deftest gptel-agent-harness-test-inject-skipped-without-backend ()
+  "Nothing is injected while the request has no backend yet.
+The prompt is still being assembled, so the queue must be preserved for
+the top-level request that follows."
   (cl-letf (((symbol-function 'gptel--inject-prompt)
              #'gptel-agent-harness-test--position-aware-inject-prompt))
     (gptel-agent-harness-test--with-temp-dir proj-dir
@@ -1690,9 +1730,28 @@ error may escape."
            (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
       ;; `gptel--inject-prompt' throws → fallback to DONE
       (cl-letf (((symbol-function 'gptel--inject-prompt)
-                 (lambda (&rest _) (error "boom"))))
+                 (lambda (&rest _) (error "Boom"))))
         (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE)
         (should (eq orig-called 'DONE))))))
+
+(ert-deftest gptel-agent-harness-test-terminal-state-dead-buffer-terminates ()
+  "A killed session buffer must terminate the FSM, not nudge it forever.
+
+Each redirect to WAIT fires a fresh LLM request, and the nudge counter
+lives in the (now dead) buffer, so an unbounded loop of paid requests
+would follow a user killing the buffer mid-run."
+  (let* ((buf (generate-new-buffer " *gptel-harness-dead-fsm*"))
+         (tools (vector (list :type "function" :function (list :name "test"))))
+         (fsm (gptel-agent-harness-test--make-fsm buf
+                :handlers gptel-send--handlers
+                :tools tools
+                :messages (vector (list :role "user" :content "hi"))))
+         (targets nil)
+         (orig-fn (lambda (&optional _m ns) (push ns targets))))
+    (kill-buffer buf)
+    (dotimes (_ 5)
+      (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE))
+    (should (equal targets '(DONE DONE DONE DONE DONE)))))
 
 (ert-deftest gptel-agent-harness-test-wait-state-compaction-error-fallback ()
   "`--handle-wait-state' falls back to the real transition when compaction errors.
@@ -1711,7 +1770,7 @@ with WAIT and no error escapes."
            (orig-called nil)
            (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
       (cl-letf (((symbol-function 'gptel-agent-harness--compact)
-                 (lambda (&rest _) (error "boom"))))
+                 (lambda (&rest _) (error "Boom"))))
         (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
         (should (eq orig-called 'WAIT))))))
 
@@ -1729,7 +1788,7 @@ the transition / request)."
                   :tools tools
                   :messages (vector (list :role "user" :content "hi"))))
            (calls 0)
-           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "orig-fn boom"))))
+           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "Orig-fn boom"))))
       (should-error (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE))
       (should (= calls 1)))))
 
@@ -1748,7 +1807,7 @@ the transition / request)."
                   :tools tools
                   :messages (vector (list :role "user" :content "hi"))))
            (calls 0)
-           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "orig-fn boom"))))
+           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "Orig-fn boom"))))
       (cl-letf (((symbol-function 'gptel-agent-harness--compact)
                  (lambda (&rest _) nil)))
         (should-error (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT))
@@ -1898,6 +1957,32 @@ the transition / request)."
             (goto-char (point-max))
             (forward-line -1)
             (should (string-match-p "Review the requested code changes" (thing-at-point 'line t))))
+          (kill-buffer buf))))
+    (delete-file temp-file)))
+
+(ert-deftest gptel-agent-harness-test-session-tolerates-unknown-tools ()
+  "A tool name that is not registered degrades the tool set, not the command.
+
+`gptel-get-tool' signals for an unknown name, and the harness's own
+tools (Question, PlanExit) only exist while `gptel-agent-harness-mode' is
+enabled — but the commands are autoloaded and can run before that."
+  (let ((temp-file (make-temp-file "review-" nil ".txt" "Reviewer at ${path}.")))
+    (let ((gptel-agent-harness-commands--review-prompt-file temp-file)
+          (gptel-agent-harness--default-tools '("Glob" "NoSuchTool" "Grep")))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) ""))
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name)
+                   (if (equal name "NoSuchTool")
+                       (error "No tool matches for %S" name)
+                     (intern (format "tool-%s" name)))))
+                ((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-send) #'ignore))
+        (let ((buf (gptel-agent-harness-commands-review nil)))
+          (should (buffer-live-p buf))
+          (with-current-buffer buf
+            (should gptel-use-tools)
+            ;; The unknown name is dropped; the resolvable ones survive.
+            (should (equal gptel-tools '(tool-Glob tool-Grep))))
           (kill-buffer buf))))
     (delete-file temp-file)))
 
@@ -2337,7 +2422,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
       ;; Write a session file with tool names but no preset
       (with-temp-file session-file
         (insert "Session content.\n")
-        (insert "\n;; Local Variables:\n")
+        (insert "\n" gptel-agent-harness-test--lv-header "\n")
         (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
         (insert ";; gptel-model: \"gpt-5-mini\"\n")
         (insert ";; gptel--backend-name: \"test-be\"\n")
@@ -2360,7 +2445,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
   "Test restore with a trailing local-vars block in the session.
 Restore must use the trailing local-vars block, not an earlier
 occurrence quoted in the conversation.
-Conversations can contain \";; Local Variables:\" inside quoted source
+Conversations can contain a quoted local-variables header inside source
 code; parsing the first match truncates the conversation and discards
 all saved state."
   (gptel-agent-harness-test--with-temp-dir temp-dir
@@ -2370,13 +2455,13 @@ all saved state."
       (with-temp-file session-file
         (insert "Conversation start.\n")
         (insert "```elisp\n")
-        (insert ";; Local Variables:\n")
+        (insert gptel-agent-harness-test--lv-header "\n")
         (insert ";; package-lint-main-file: \"foo.el\"\n")
         (insert ";; End:\n")
         (insert "```\n")
         (insert "Conversation end.\n")
         ;; The real trailing block appended by auto-save
-        (insert "\n;; Local Variables:\n")
+        (insert "\n" gptel-agent-harness-test--lv-header "\n")
         (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
         (insert ";; gptel-model: \"gpt-5-mini\"\n")
         (insert ";; gptel--tool-names: (\"Glob\" \"Grep\" \"Read\")\n")
@@ -2411,7 +2496,7 @@ all saved state."
     (let ((session-file (expand-file-name "test_260723100000.md" temp-dir)))
       (with-temp-file session-file
         (insert "User: hello\nAssistant: hi\n")
-        (insert "\n;; Local Variables:\n")
+        (insert "\n" gptel-agent-harness-test--lv-header "\n")
         (insert ";; gptel-model: \"gpt-5\"\n")
         (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
         (insert ";; End:\n"))
@@ -2426,7 +2511,8 @@ all saved state."
                 (should (string-match-p "/tmp/proj" (buffer-string)))
                 (should (string-match-p "User: hello" (buffer-string)))
                 ;; Local vars block should be removed from preview
-                (should-not (string-match-p ";; Local Variables:" (buffer-string))))))
+                (should-not (string-match-p (regexp-quote gptel-agent-harness-test--lv-header)
+                                            (buffer-string))))))
         (gptel-agent-harness--dismiss-preview)))))
 
 (ert-deftest gptel-agent-harness-test-preview-session-truncation ()
@@ -2459,4 +2545,8 @@ all saved state."
   (should-not (get-buffer "*gptel-session-preview*")))
 
 (provide 'gptel-agent-harness-test)
+
+;; No `package-lint-main-file' here on purpose: this file IS the main file
+;; of the test pair (gptel-agent-harness-extra-test.el points at it), so it
+;; must carry the Package-Requires header itself.
 ;;; gptel-agent-harness-test.el ends here
