@@ -11,7 +11,8 @@ It adds completion supervision, context management, session persistence, opencod
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
 - **Tool result caching** — Caches Glob/Grep/Read results with deduplication.
 - **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval that respects `gptel-confirm-tool-calls`.
-- **Build/Plan mode** — Per-buffer agent modes (default: build).
+- **FSM hardening** — Narrow advice on gptel's state machine so malformed tool calls/results can never wedge a request.
+- **Build/Plan mode** — Per-buffer agent modes (default: build), with a `PlanExit` tool for user-approved switch to build.
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Sub-agent model selection** — Enable sub-agents to use a different model than the main agent.
 - **Commands** — Project initialization, code review, conversation summary, manual compaction and user-defined commands.
@@ -89,10 +90,10 @@ Shows `[Ctx:45%/70%]` color-coded: green (<50%), yellow (50–80%), red (>80%).
 Triggered when context exceeds `gptel-agent-harness-context-trigger`. The harness:
 
 1. Removes the current round (last response + tool results)
-2. Extracts previous summary (if any) into `<previous-summary>` tags
-3. Sends buffer to LLM with compact prompt
-4. Rebuilds: header + new summary + separator + current round + recent requests
-5. Resumes with `gptel-send`
+2. Aborts the in-flight request and strips the previous compaction frame (header/separator), leaving any earlier summary as plain text
+3. Sends the buffer to the LLM with the compact prompt
+4. Rebuilds: header + new summary + separator
+5. Re-appends the last real user request (nudge messages excluded) and resumes with `gptel-send`
 
 ### Manual
 
@@ -145,6 +146,11 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-commands-load-custom` | (Re)discover custom commands from the custom dir |
 | `gptel-agent-harness-restore-session` | Restore a saved session |
 | `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
+| `gptel-agent-harness-undo-last-edit` | Undo the most recent Edit/Write/Insert |
+| `gptel-agent-harness-undo-history` | Show the edit snapshot stack |
+| `gptel-agent-harness-safety-clear-session` | Reset session Bash allow/deny decisions |
+| `gptel-agent-harness-cache-stats` | Show cache hit/miss/dedup counts |
+| `gptel-agent-harness-cache-clear` | Clear the cache for the current buffer |
 
 ## Sub-Agent Model/Backend
 
@@ -190,6 +196,7 @@ An example `explain` command ships in `prompts/commands/explain.txt`.
 - **Glob**: Uses `git ls-files` for `.gitignore`-aware listing; falls back to `tree`.
 - **Grep**: Uses `git grep -e` for safe regex; falls back to `rg` or `grep`.
 - **Question**: LLM asks user via `completing-read` (single/multi-select, free-text). Encourage usage by adding guidance to your system prompt.
+- **PlanExit**: LLM asks the user for approval to leave plan mode. On approval the buffer switches to build mode and the agent starts to execute the approved plan.
 
 ## Tool Result Caching
 
@@ -291,14 +298,53 @@ M-x gptel-agent-harness-set-mode RET build|plan   ; set explicitly
 The mode-line shows `[Build]`/`[Plan]` (with a tooltip) immediately before the
 `[Ctx:...]` context indicator.
 
+### Read-Only Enforcement
+
+Edit/Insert/Write/mkdir are refused for every path except the plan file. Bash
+is validated per segment (split on `&&`, `||`, `|`, `;`, `&`, newlines): each
+segment's first word must be in
+`gptel-agent-harness-safety-plan-readonly-bash-commands` and must contain no
+mutating construct (redirection, `tee`, `xargs`, `sudo`, mutating `git`
+subcommand). Command/process substitution (`$(...)`, backticks, `<(...)`,
+`>(...)`) is refused wholesale.
+
 ### Options
 
-- `gptel-agent-harness-plan-file-name` — Plan file name (default: `PLAN.md`).
+- `gptel-agent-harness-plan-file-name` — Plan file name (default: `PLAN.md`),
+  created in a per-session temp directory so concurrent sessions on the same
+  project never share a plan file. Deleted when the session buffer is killed.
 - `gptel-agent-harness-plan-mode-subagent-reminder` — READ-ONLY reminder
   template injected into sub-agent requests while plan mode is active (`%s` is
   replaced with the plan file path).
+- `gptel-agent-harness-tools-plan-exit-approved-message` — Message queued after
+  `PlanExit` approval (`%s` → plan file path).
 - `gptel-agent-harness-safety-plan-readonly-bash-commands` — First-word
   whitelist of Bash commands allowed during plan mode.
+
+## FSM Hardening
+
+`gptel-agent-harness-fsm.el` installs four narrow `:around` advices on gptel's
+request state machine (enabled/disabled with the minor mode; upstream files are
+never modified). Without them, a malformed tool call or a missing tool result
+can leave a request wedged mid-transition or make the backend reject the
+conversation.
+
+| Advice | Target | Effect |
+|---|---|---|
+| U1 | `gptel--map-tool-args` | Non-plist tool `:args` normalized to nil instead of throwing `wrong-type-argument` |
+| U2 | `gptel--handle-tool-use` | Handler errors fail all pending tool calls, so the FSM leaves `TOOL` |
+| U3 | `gptel--process-tool-call` | Result processing is idempotent — first result wins, duplicates are no-ops |
+| U4 | `gptel--handle-tool-result` | Non-string/missing `:result` coerced to a string (avoids `{}` content rejected by OpenAI/Ollama/Gemini/Bedrock); handler errors still transition out of `TRET` |
+
+## Miscellaneous Options
+
+- `gptel-agent-harness-verbose` — Log harness actions (nudges, compaction,
+  calibration, injection, FSM recoveries) via `message` (default: nil). Also
+  enables the `*gptel-agent-harness-debug*` token-estimation dump.
+- `gptel-agent-harness-agent-dirs` — Directories scanned for agent definition
+  files (default: `agents/`).
+- `gptel-agent-harness-preview-lines` — Lines shown in the session restore
+  preview (default: 40).
 
 ## File Structure
 
@@ -307,8 +353,9 @@ site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
 ├── gptel-agent-harness-cache.el    # Tool result caching with deduplication
 ├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval, edit undo
+├── gptel-agent-harness-fsm.el      # FSM hardening advice on upstream gptel
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
-├── gptel-agent-harness-tools.el    # Enhanced tools + Question tool
+├── gptel-agent-harness-tools.el    # Enhanced tools + Question/PlanExit tools
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
 ├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT tests: core supervision/context/commands
