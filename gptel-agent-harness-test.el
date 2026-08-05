@@ -1965,10 +1965,19 @@ the transition / request)."
 
 `gptel-get-tool' signals for an unknown name, and the harness's own
 tools (Question, PlanExit) only exist while `gptel-agent-harness-mode' is
-enabled — but the commands are autoloaded and can run before that."
+enabled — but the commands are autoloaded and can run before that.
+
+`debug-on-error' is bound to t on purpose.  The production code must use
+a plain `condition-case': `with-demoted-errors' expands to
+`condition-case-unless-debug' and re-signals when `debug-on-error' is
+set, so the degradation would silently disappear for anyone debugging.
+Emacs 29's ERT binds `debug-on-error' to t around every test body while
+Emacs 30's uses `handler-bind', so without this explicit binding the
+regression is invisible on Emacs 30."
   (let ((temp-file (make-temp-file "review-" nil ".txt" "Reviewer at ${path}.")))
     (let ((gptel-agent-harness-commands--review-prompt-file temp-file)
-          (gptel-agent-harness--default-tools '("Glob" "NoSuchTool" "Grep")))
+          (gptel-agent-harness--default-tools '("Glob" "NoSuchTool" "Grep"))
+          (debug-on-error t))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) ""))
                 ((symbol-function 'gptel-get-tool)
                  (lambda (name)
@@ -2415,9 +2424,14 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
 ;;;; Session Restore Tool Names Path
 
 (ert-deftest gptel-agent-harness-test-restore-session-tool-names ()
-  "Test session restore uses `gptel--tool-names' when no preset is available."
+  "Test session restore uses `gptel--tool-names' when no preset is available.
+A name that no longer resolves is skipped instead of aborting the
+restore.  `debug-on-error' is bound to t so the check also covers the
+`condition-case-unless-debug' trap: `with-demoted-errors' here would
+re-signal and lose every tool (see the comment at the call site)."
   (gptel-agent-harness-test--with-temp-dir temp-dir
     (let ((gptel-agent-harness-session-dir temp-dir)
+          (debug-on-error t)
           (session-file (expand-file-name "test_260723100000.md" temp-dir)))
       ;; Write a session file with tool names but no preset
       (with-temp-file session-file
@@ -2426,14 +2440,17 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
         (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
         (insert ";; gptel-model: \"gpt-5-mini\"\n")
         (insert ";; gptel--backend-name: \"test-be\"\n")
-        (insert ";; gptel--tool-names: (\"Glob\" \"Grep\" \"Read\")\n")
+        (insert ";; gptel--tool-names: (\"Glob\" \"Gone\" \"Grep\" \"Read\")\n")
         (insert ";; End:\n"))
       (cl-letf (((symbol-function 'gptel-agent-update) #'ignore)
                 ((symbol-function 'gptel-mode)
                  (lambda (&optional arg)
                    (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
                 ((symbol-function 'gptel-get-tool)
-                 (lambda (name) (list :name name :function #'ignore)))
+                 (lambda (name)
+                   (if (equal name "Gone")
+                       (error "No tool matches for %S" name)
+                     (list :name name :function #'ignore))))
                 ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
         (gptel-agent-harness-restore-session session-file)
         ;; Tools should be restored from gptel--tool-names
