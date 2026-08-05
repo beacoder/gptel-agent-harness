@@ -162,12 +162,12 @@ MAIN-CB is the callback that returns a value to the parent loop.
 DESCRIPTION is the sub-agent task description, used in error messages.
 
 The upstream callback's `pcase' (gptel-agent-tools.el) has no `_'
-fallback, so an unexpected response type (e.g. `t' streaming markers,
+fallback, so an unexpected response type (e.g. t streaming markers,
 `(cons \\='reasoning ...)' thinking blocks, or a vector) raises
 `pcase-no-match' and the parent FSM is left stuck in TOOL forever.  The
 wrapper runs CALLBACK inside `condition-case'; on error it calls
 MAIN-CB with an error string so the parent FSM keeps moving.  Non-final
-stream markers (`t' and `(reasoning . _)') are ignored, matching
+stream markers (t and `(reasoning . _)') are ignored, matching
 upstream semantics."
   (lambda (resp info)
     (condition-case err
