@@ -218,7 +218,7 @@ any side effect. Bash commands referencing such paths are blocked as well.
 ### Bash Timeout
 
 Asynchronous Bash commands are killed after
-`gptel-agent-harness-safety-bash-timeout` seconds (default: 120) and report a
+`gptel-agent-harness-safety-bash-timeout` seconds (default: 300) and report a
 timeout error instead of hanging the agent FSM. Set to nil to disable.
 
 ### Tiered Bash Approval
@@ -265,7 +265,7 @@ the snapshot stack.
 ### Options
 
 - `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("/mnt/")`).
-- `gptel-agent-harness-safety-bash-timeout` — Max Bash runtime in seconds (default: 120, nil disables).
+- `gptel-agent-harness-safety-bash-timeout` — Max Bash runtime in seconds (default: 300, nil disables).
 - `gptel-agent-harness-safety-bash-approval` — Approval policy: nil / `confirm` / `block`.
 - `gptel-agent-harness-safety-bash-dangerous-patterns` — Prompted tier (respects `gptel-confirm-tool-calls`).
 - `gptel-agent-harness-safety-bash-destructive-patterns` — Never-prompt tier.
