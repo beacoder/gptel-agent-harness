@@ -47,6 +47,9 @@
 ;; Silence byte-compiler — defined in gptel-agent.el
 (defvar gptel-agent--agents)
 
+;; Silence byte-compiler — defined in gptel-agent-harness.el
+(defvar gptel-agent-harness-verbose)
+
 ;;;; Internal State
 
 (defvar gptel-agent-harness-agent--orig-dirs nil
@@ -148,6 +151,58 @@ sub-agent; all are passed through to ORIG-FN unchanged."
                    spec)))
     (funcall orig-fn main-cb agent-type description prompt)))
 
+;;;; Sub-agent Callback Guard
+
+(defun gptel-agent-harness-agent--guard-subagent-callback
+    (callback main-cb description)
+  "Return a guarded wrapper around CALLBACK that never signals.
+
+CALLBACK is gptel-request's `:callback' for a sub-agent request and
+MAIN-CB is the callback that returns a value to the parent loop.
+DESCRIPTION is the sub-agent task description, used in error messages.
+
+The upstream callback's `pcase' (gptel-agent-tools.el) has no `_'
+fallback, so an unexpected response type (e.g. `t' streaming markers,
+`(cons \\='reasoning ...)' thinking blocks, or a vector) raises
+`pcase-no-match' and the parent FSM is left stuck in TOOL forever.  The
+wrapper runs CALLBACK inside `condition-case'; on error it calls
+MAIN-CB with an error string so the parent FSM keeps moving.  Non-final
+stream markers (`t' and `(reasoning . _)') are ignored, matching
+upstream semantics."
+  (lambda (resp info)
+    (condition-case err
+        (funcall callback resp info)
+      (error
+       (when gptel-agent-harness-verbose
+         (message "gptel-agent-harness-agent: sub-agent callback error — %s"
+                  (error-message-string err)))
+       (unless (or (eq resp t)
+                   (and (consp resp) (eq (car resp) 'reasoning)))
+         (funcall main-cb
+                  (format "Error: Task \"%s\" returned an unexpected response %S — %s"
+                          description resp (error-message-string err))))))))
+
+(defun gptel-agent-harness-agent--task-callback-guard
+    (orig-fn main-cb agent-type description prompt)
+  "Around advice for `gptel-agent--task' guarding the sub-agent callback.
+
+ORIG-FN is `gptel-agent--task'.  MAIN-CB, AGENT-TYPE, DESCRIPTION and
+PROMPT are passed through unchanged.  Rebinds `gptel-request' so its
+`:callback' argument is wrapped by
+`gptel-agent-harness-agent--guard-subagent-callback', preventing a
+`pcase-no-match' from leaving the parent FSM stuck in TOOL."
+  (let ((orig-request (symbol-function 'gptel-request)))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (prompt &rest args)
+                 (let ((callback (plist-get args :callback)))
+                   (if (functionp callback)
+                       (apply orig-request prompt
+                              (plist-put args :callback
+                                         (gptel-agent-harness-agent--guard-subagent-callback
+                                          callback main-cb description)))
+                     (apply orig-request prompt args))))))
+      (funcall orig-fn main-cb agent-type description prompt))))
+
 ;;;; Agent Registry
 
 (defvar gptel-agent-harness-agent--defined-agents nil
@@ -233,7 +288,9 @@ Only registers presets that haven't been registered yet."
     (advice-add 'gptel-agent :override #'gptel-opencode-agent))
   (when (fboundp 'gptel-agent--task)
     (advice-add 'gptel-agent--task
-                :around #'gptel-agent-harness-agent--apply-subagent-settings))
+                :around #'gptel-agent-harness-agent--apply-subagent-settings)
+    (advice-add 'gptel-agent--task
+                :around #'gptel-agent-harness-agent--task-callback-guard))
   (advice-add 'gptel-agent-update :after #'gptel-agent-harness-agent--register-preset))
 
 (defun gptel-agent-harness-agent-disable ()
@@ -246,6 +303,8 @@ Only registers presets that haven't been registered yet."
     (setq gptel-agent-harness-agent--orig-fn nil))
   (advice-remove 'gptel-agent--task
                  #'gptel-agent-harness-agent--apply-subagent-settings)
+  (advice-remove 'gptel-agent--task
+                 #'gptel-agent-harness-agent--task-callback-guard)
   (advice-remove 'gptel-agent-update #'gptel-agent-harness-agent--register-preset))
 
 (provide 'gptel-agent-harness-agent)
