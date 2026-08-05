@@ -74,11 +74,15 @@
 ;;;; User Options
 
 (defcustom gptel-agent-harness-safety-forbidden-paths
-  '("/mnt/")
+  '("\\`/mnt/")
   "Regexps matching paths that tools must never touch.
 Read/Glob/Grep/Edit/Insert/Write operations whose expanded path
 matches any of these are rejected with an error.  Bash commands
-containing a match are also blocked."
+containing a match are also blocked.
+
+Anchor entries with \\=\\` when they name a top-level directory: the
+unanchored regexp \"/mnt/\" would also reject unrelated paths that
+merely contain that component, such as \"~/work/mnt/data\"."
   :type '(repeat regexp)
   :group 'gptel-agent-harness)
 
@@ -106,7 +110,7 @@ refused regardless of this setting."
   :group 'gptel-agent-harness)
 
 (defcustom gptel-agent-harness-safety-bash-dangerous-patterns
-  '("\\brm\\s-+-rf?\\b"
+  '("\\brm\\b[^;&|\n]*\\s--\\(?:[a-z]*r\\|-recursive\\)"
     "\\bgit\\s-+push\\b.*--force\\b"
     "\\bgit\\s-+reset\\b.*--hard\\b"
     "\\bchmod\\s-+-R\\s-*[0-7][0-7][0-7]\\b"
@@ -119,6 +123,11 @@ Commands matching any pattern are subject to
 \(only when `gptel-confirm-tool-calls' is non-nil) or refused under
 `block'.  A command already allowed/denied for this session is not
 asked about again.
+
+The `rm' pattern matches any flag spelling that requests recursion
+\(`-r', `-R', `-rf', `-fr', `-rvf', `--recursive', ...) rather than a
+fixed set, so no ordering or bundling of short flags can slip a
+recursive delete past the approval prompt.
 
 Common-but-risky commands (`sudo', `pkill', `killall') are deliberately
 kept out of this list — see
@@ -228,24 +237,25 @@ rejected without being prompted again.")
                when (string-match-p regexp expanded)
                return regexp))))
 
+(defun gptel-agent-harness-safety--command-forbidden-p (command)
+  "Return the matching forbidden regexp for a path inside COMMAND, or nil.
+
+COMMAND is split into tokens on whitespace, shell operators and quotes,
+and each token is checked with
+`gptel-agent-harness-safety--path-forbidden-p'.  Checking tokens rather
+than the whole command string is what lets anchored regexps such as
+\"\\\\=`/mnt/\" match the paths a command references."
+  (when (stringp command)
+    (cl-loop for token in (split-string command "[ \t\n\r;&|<>()\"']+" t)
+             for match = (gptel-agent-harness-safety--path-forbidden-p token)
+             when match return match)))
+
 (defun gptel-agent-harness-safety--check-path (path tool-name)
   "Signal an error if PATH is forbidden.
 TOOL-NAME is used in the error message."
   (when-let* ((regexp (gptel-agent-harness-safety--path-forbidden-p path)))
     (error "Error: %s blocked by harness safety — path %s matches forbidden pattern %S"
            tool-name (abbreviate-file-name (expand-file-name path)) regexp)))
-
-(defun gptel-agent-harness-safety--check-path-args (tool-name &rest paths)
-  "Check each of PATHS against forbidden paths, using TOOL-NAME in errors."
-  (dolist (path paths)
-    (when (stringp path)
-      (gptel-agent-harness-safety--check-path path tool-name))))
-
-(defun gptel-agent-harness-safety--path-guard (orig-fn tool-name &rest args)
-  "Around advice checking ARGS for forbidden paths, then calling ORIG-FN.
-TOOL-NAME names the tool for error messages."
-  (gptel-agent-harness-safety--check-path-args tool-name args)
-  (apply orig-fn args))
 
 (defun gptel-agent-harness-safety--read-guard (orig-fn filename &optional start-line end-line)
   "Path guard for `gptel-agent--read-file-lines'; passes through to ORIG-FN.
@@ -336,9 +346,20 @@ itself."
 
 (defun gptel-agent-harness-safety--timeout-callback (proc orig-cb command timeout)
   "Kill PROC if it is still running and call ORIG-CB with a timeout error.
-COMMAND and TIMEOUT are used in the message."
+COMMAND and TIMEOUT are used in the message.
+
+PROC's sentinel is silenced before the process is deleted.
+`delete-process' runs the sentinel synchronously, and the upstream Bash
+sentinel calls ORIG-CB itself with a generic \"Command failed with exit
+code 9\" message: the tool result would be delivered twice, and the
+first (uninformative) one would win, hiding the timeout from the model.
+Silencing the sentinel means this function owns both the result and the
+cleanup of the process buffer the sentinel would otherwise have killed."
   (when (and proc (process-live-p proc))
-    (delete-process proc)
+    (let ((pbuf (process-buffer proc)))
+      (set-process-sentinel proc #'ignore)
+      (delete-process proc)
+      (when (buffer-live-p pbuf) (kill-buffer pbuf)))
     (funcall orig-cb
              (format "Error: Bash command timed out after %d seconds and was killed.\nCommand:\n%s"
                      timeout command))))
@@ -354,7 +375,10 @@ it passes the checks.
 
 Refusal tiers, in order:
 - forbidden path in COMMAND — always refused;
-- catastrophic pattern — always refused, no prompt, no override;
+- catastrophic pattern — always refused, no prompt, no override.  This
+  is checked BEFORE the plan-mode gate so the catastrophic floor holds
+  in every mode, even for a command the read-only whitelist accepts;
+- plan mode — only read-only commands are allowed;
 - destructive pattern (`sudo', `pkill', `killall', ...) — never
   prompts; refused only when `gptel-agent-harness-safety-bash-approval'
   is `block';
@@ -367,10 +391,14 @@ Refusal tiers, in order:
 Session-scoped allow/deny recorded at the approval prompt takes
 precedence over asking again."
   (cond
-   ((gptel-agent-harness-safety--path-forbidden-p command)
+   ((gptel-agent-harness-safety--command-forbidden-p command)
     (funcall callback
              (format "Error: Bash blocked by harness safety — command references forbidden path pattern %S"
-                     (gptel-agent-harness-safety--path-forbidden-p command)))
+                     (gptel-agent-harness-safety--command-forbidden-p command)))
+    nil)
+   ((gptel-agent-harness-safety--bash-catastrophic-p command)
+    (funcall callback
+             "Error: Bash blocked by harness safety — command matches a catastrophic pattern and is never allowed.")
     nil)
    ((gptel-agent-harness-safety--plan-mode-active-p)
     (if (gptel-agent-harness-safety--bash-read-only-p command)
@@ -378,10 +406,6 @@ precedence over asking again."
       (funcall callback
                "Error: Bash blocked by plan mode — read-only phase. Only read-only commands are allowed (e.g. ls, grep, cat, git status/diff); use Read/Glob/Grep to inspect instead.")
       nil))
-   ((gptel-agent-harness-safety--bash-catastrophic-p command)
-    (funcall callback
-             "Error: Bash blocked by harness safety — command matches a catastrophic pattern and is never allowed.")
-    nil)
    ((gptel-agent-harness-safety--bash-destructive-p command)
     (if (eq gptel-agent-harness-safety-bash-approval 'block)
         (progn
@@ -411,15 +435,28 @@ precedence over asking again."
 
 (defun gptel-agent-harness-safety--run-bash (orig-fn callback command)
   "Run COMMAND through ORIG-FN wrapped with the safety timeout.
-Reports failure via CALLBACK when the timeout kills the process."
-  (let ((proc (funcall orig-fn callback command)))
-    (when (and gptel-agent-harness-safety-bash-timeout
-               (> gptel-agent-harness-safety-bash-timeout 0)
-               proc)
-      (run-at-time gptel-agent-harness-safety-bash-timeout nil
-                   #'gptel-agent-harness-safety--timeout-callback
-                   proc callback command
-                   gptel-agent-harness-safety-bash-timeout))
+Reports failure via CALLBACK when the timeout kills the process.
+
+The timer is cancelled from the process sentinel as soon as the command
+finishes, so a completed command leaves no armed timer behind (otherwise
+every Bash call would keep one alive for the whole timeout window).  The
+process's own sentinel is chained, not replaced."
+  (let ((proc (funcall orig-fn callback command))
+        (timeout gptel-agent-harness-safety-bash-timeout))
+    (when (and proc
+               (processp proc)
+               timeout
+               (> timeout 0))
+      (let ((timer (run-at-time timeout nil
+                                #'gptel-agent-harness-safety--timeout-callback
+                                proc callback command timeout))
+            (inner-sentinel (process-sentinel proc)))
+        (set-process-sentinel
+         proc
+         (lambda (p event)
+           (when (memq (process-status p) '(exit signal))
+             (cancel-timer timer))
+           (when inner-sentinel (funcall inner-sentinel p event))))))
     proc))
 
 (defun gptel-agent-harness-safety--bash-verdict (command)
@@ -514,8 +551,15 @@ VERDICT is `allow' or `deny'."
 
 Detects file redirections (except fd-duplication like 2>&1), `tee',
 `xargs', `sudo', and `git' invocations with a mutating subcommand
-\(commit, push, checkout, reset, ... — flags between `git' and the
-subcommand are tolerated).  The first-word whitelist in
+\(commit, push, checkout, apply, clone, ... — flags between `git' and
+the subcommand are tolerated).  The git subcommand list covers every
+subcommand that can touch the working tree, the object store, refs or
+the filesystem, including the ones that are easy to overlook: `apply',
+`am', `cherry-pick', `revert', `init', `clone', `worktree',
+`submodule', `format-patch', `archive' and `bundle' all write files
+even though they read like inspection commands.
+
+The first-word whitelist in
 `gptel-agent-harness-safety-plan-readonly-bash-commands' covers the
 remaining read-only commands; everything else is refused in plan mode
 regardless of this predicate."
@@ -529,7 +573,15 @@ regardless of this predicate."
                                 "\\b\\(?:add\\|commit\\|push\\|pull\\|fetch\\|"
                                 "merge\\|rebase\\|reset\\|checkout\\|switch\\|"
                                 "restore\\|clean\\|rm\\|mv\\|remote\\|config\\|"
-                                "gc\\|branch\\|tag\\|stash\\)\\b")
+                                "gc\\|branch\\|tag\\|stash\\|apply\\|am\\|"
+                                "cherry-pick\\|revert\\|init\\|clone\\|"
+                                "worktree\\|submodule\\|update-ref\\|"
+                                "symbolic-ref\\|update-index\\|hash-object\\|"
+                                "write-tree\\|commit-tree\\|mktree\\|"
+                                "format-patch\\|archive\\|bundle\\|bisect\\|"
+                                "notes\\|replace\\|prune\\|repack\\|"
+                                "sparse-checkout\\|filter-branch\\|"
+                                "fast-import\\|reflog\\|maintenance\\)\\b")
                         c))))
 
 (defun gptel-agent-harness-safety--bash-first-command (command)
@@ -578,12 +630,17 @@ one to be allowed."
                "\\(?:^\\|\\s-\\)-fprintf?\\b"
                "\\(?:^\\|\\s-\\)-fls\\b"))
     ("sort" . ("\\(?:^\\|\\s-\\)-o\\b"
-               "\\(?:^\\|\\s-\\)--output\\b")))
+               "\\(?:^\\|\\s-\\)--output\\b"))
+    ("yq" . ("\\(?:^\\|\\s-\\)-[a-zA-Z]*i\\b"
+             "\\(?:^\\|\\s-\\)--inplace\\b"))
+    ("jq" . ("\\(?:^\\|\\s-\\)--in-place\\b"
+             "\\(?:^\\|\\s-\\)-i\\b")))
   "Alist of (COMMAND . REGEXPS) for mutating argument forms.
 A whitelisted COMMAND is refused in plan mode when its segment matches
 any of REGEXPS.  These cover the write/exec options of otherwise
-read-only tools (e.g. `find -delete'/`find -exec', `sort -o') that
-would bypass the first-word check.")
+read-only tools that would bypass the first-word check: `find -delete'
+and `find -exec', `sort -o', and the in-place edit flags of `yq'/`jq'
+\(`yq -i FILE' rewrites the file it is given).")
 
 (defun gptel-agent-harness-safety--command-args-safe-p (name segment)
   "Return non-nil for a non-mutating invocation of NAME in SEGMENT.
@@ -755,9 +812,10 @@ stack so the call can be retried."
 (defun gptel-agent-harness-safety-enable ()
   "Activate the safety layer.
 Installs path guards, Bash timeout/approval, and edit snapshots.
-Advice is added with depth -100, before the caching layer at depth
--90, so forbidden paths are rejected even on cache hits."
-  ;; Path guards (innermost of all :around advice)
+Advice is added with depth -100, which places it OUTERMOST — a negative
+depth runs earlier than the caching layer at depth -90, so forbidden
+paths are rejected before the cache can answer from a previous result."
+  ;; Path guards (outermost of all :around advice)
   (advice-add 'gptel-agent--read-file-lines
               :around #'gptel-agent-harness-safety--read-guard '((depth . -100)))
   (advice-add 'gptel-agent--glob
