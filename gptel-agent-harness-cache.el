@@ -116,17 +116,16 @@ Initialized on first access via `gptel-agent-harness-cache--ensure-stats'.")
 
 (defun gptel-agent-harness-cache--make-key (func-name args)
   "Generate cache key from FUNC-NAME symbol and ARGS list.
-Canonicalizes file paths for consistent cache hits."
-  (cons func-name
-        (mapcar (lambda (arg)
-                  (if (and (stringp arg)
-                           (not (string-empty-p arg))
-                           (or (file-name-absolute-p arg)
-                               (string-prefix-p "." arg)
-                               (string-prefix-p "~" arg)))
-                      (expand-file-name arg)
-                    arg))
-                args)))
+
+ARGS are used verbatim.  Callers pass paths already canonicalized with
+`expand-file-name' (see the caching advice), so no path handling happens
+here: guessing which arguments are paths would misfire on the ones that
+are not.  A Grep regexp like \"\\.*foo\" starts with a dot but is a
+pattern, not a relative file name; expanding it would bind the key to
+`default-directory' (losing hits when it changes) and let
+`gptel-agent-harness-cache--invalidate-path' mistake it for a cached
+search path."
+  (cons func-name args))
 
 ;;;; Invalidation Checks
 
