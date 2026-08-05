@@ -41,6 +41,7 @@
 (require 'gptel-agent-harness-commands)
 (require 'gptel-agent-harness-cache)
 (require 'gptel-agent-harness-safety)
+(require 'gptel-agent-harness-fsm)
 (require 'cl-lib)
 (require 'format-spec)
 
@@ -217,17 +218,34 @@ Sub-agent FSMs use `gptel-agent-request--handlers' instead of
 
 ;;;; Completion Actions
 (defun gptel-agent-harness--nudge (fsm)
-  "Inject nudge message into FSM prompt data and bump counter."
+  "Inject nudge message into FSM prompt data and bump counter.
+
+Returns non-nil iff the nudge was injected, nil otherwise.  Never
+signals: if the FSM's `:data' is not a plist (e.g. still a prompt
+buffer while gptel assembles the query) or `gptel--inject-prompt'
+errors, the failure is logged (when verbose) and nil is returned so
+the caller can fall back to a clean terminal transition instead of
+wedging the FSM."
   (let ((info (gptel-fsm-info fsm)))
     (gptel-agent-harness--inc-nudges fsm)
-    (gptel--inject-prompt
-     (plist-get info :backend)
-     (plist-get info :data)
-     (list :role "user" :content gptel-agent-harness-nudge-message))
-    (when gptel-agent-harness-verbose
-      (message "gptel-agent-harness: completion nudge %d/%d — asking LLM to review task"
-               (gptel-agent-harness--get-nudges fsm)
-               gptel-agent-harness-max-nudges))))
+    (let ((data (plist-get info :data)))
+      (when (plistp data)
+        (condition-case err
+            (progn
+              (gptel--inject-prompt
+               (plist-get info :backend)
+               data
+               (list :role "user" :content gptel-agent-harness-nudge-message))
+              (when gptel-agent-harness-verbose
+                (message "gptel-agent-harness: completion nudge %d/%d — asking LLM to review task"
+                         (gptel-agent-harness--get-nudges fsm)
+                         gptel-agent-harness-max-nudges))
+              t)
+          (error
+           (when gptel-agent-harness-verbose
+             (message "gptel-agent-harness: nudge failed — %s"
+                      (error-message-string err)))
+           nil))))))
 
 ;;;; Context Window Management
 (defun gptel-agent-harness--model-name (&optional fsm)
@@ -278,20 +296,28 @@ Uses:
 
 (defun gptel-agent-harness--extract-system-content (system)
   "Insert SYSTEM prompt text into current buffer.
-Handles string, plist with :parts, vector, and list forms."
+Handles string, plist with :parts, vector, and list forms.
+Malformed SYSTEM (non-plist parts, non-sequence containers) is
+rendered defensively and never signals."
   (cond
    ((stringp system) (insert system))
-   ((and (listp system) (plist-get system :parts))
+   ((and (plistp system) (plist-get system :parts))
     (let ((parts (plist-get system :parts)))
-      (cl-loop for part across (if (vectorp parts) parts (vconcat parts))
-               do (insert (or (plist-get part :text) (format "%S" part)) "\n"))))
+      (cl-loop for part across (if (sequencep parts) (vconcat parts) [])
+               do (insert (if (plistp part)
+                              (or (plist-get part :text) (format "%S" part))
+                            (format "%S" part))
+                          "\n"))))
    ((vectorp system)
     (cl-loop for part across system
-             do (insert (or (plist-get part :text) (format "%S" part)) "\n")))
+             do (insert (if (plistp part)
+                            (or (plist-get part :text) (format "%S" part))
+                          (format "%S" part))
+                        "\n")))
    ((listp system)
     (dolist (s system)
       (insert (or (and (stringp s) s)
-                  (plist-get s :text)
+                  (and (plistp s) (plist-get s :text))
                   (format "%s" s))
               "\n")))))
 
@@ -301,58 +327,69 @@ Handles string, plist with :parts, vector, and list forms."
 
 (defun gptel-agent-harness--extract-content-gemini (content)
   "Insert Gemini-style vector CONTENT into current buffer.
-Iterates over parts, extracting :thinking and :text fields."
+Iterates over parts, extracting :thinking and :text fields.
+Non-plist parts are rendered defensively and never signal."
   (cl-loop for part across content
            do (insert (or (and (stringp part) part)
-                          (and (stringp (plist-get part :thinking))
+                          (and (plistp part)
+                               (stringp (plist-get part :thinking))
                                (plist-get part :thinking))
-                          (and (stringp (plist-get part :text))
+                          (and (plistp part)
+                               (stringp (plist-get part :text))
                                (plist-get part :text))
                           (format "%S" part)))))
 
 (defun gptel-agent-harness--extract-content-anthropic (content)
   "Insert Anthropic-style list CONTENT into current buffer.
-Handles :thinking, :text, and :arguments blocks."
+Handles :thinking, :text, and :arguments blocks.
+Non-plist parts are rendered defensively and never signal."
   (dolist (part content)
     (cond
      ((stringp part) (insert part))
-     ((and (plist-get part :thinking)
+     ((and (plistp part)
+           (plist-get part :thinking)
            (stringp (plist-get part :thinking)))
       (insert (plist-get part :thinking)))
-     ((and (plist-get part :text)
+     ((and (plistp part)
+           (plist-get part :text)
            (stringp (plist-get part :text)))
       (insert (plist-get part :text)))
-     ((and (plist-get part :arguments)
+     ((and (plistp part)
+           (plist-get part :arguments)
            (stringp (plist-get part :arguments)))
       (insert (plist-get part :arguments)))
      (t (insert (format "%S" part))))))
 
 (defun gptel-agent-harness--extract-content (content)
   "Dispatch CONTENT insertion based on its type.
-Delegates to OpenAI, Gemini, or Anthropic-specific extractors."
+Delegates to OpenAI, Gemini, or Anthropic-specific extractors.
+Malformed CONTENT is rendered defensively and never signals."
   (cond
    ((stringp content)
     (gptel-agent-harness--extract-content-openai content))
    ((vectorp content)
     (gptel-agent-harness--extract-content-gemini content))
-   ((listp content)
+   ((proper-list-p content)
     (gptel-agent-harness--extract-content-anthropic content))
    (t (insert (format "%S" content)))))
 
 (defun gptel-agent-harness--extract-tool-calls (tool-calls)
   "Insert TOOL-CALLS names and arguments into current buffer.
-Handles both vector and list representations."
-  (dolist (tc (if (vectorp tool-calls)
-                  (append tool-calls nil)
-                tool-calls))
-    (let ((func (plist-get tc :function)))
-      (when func
-        (let ((name (plist-get func :name))
-              (args (plist-get func :arguments)))
-          (when name (insert name "\n"))
-          (when args (insert args "\n")))))))
+Handles both vector and list representations.
+Non-plist tool-call entries are skipped defensively and never signal."
+  (when (or (vectorp tool-calls) (proper-list-p tool-calls))
+    (dolist (tc (if (vectorp tool-calls)
+                    (append tool-calls nil)
+                  tool-calls))
+      (when (plistp tc)
+        (let ((func (plist-get tc :function)))
+          (when (plistp func)
+            (let ((name (plist-get func :name))
+                  (args (plist-get func :arguments)))
+              (when (stringp name) (insert name "\n"))
+              (when (stringp args) (insert args "\n")))))))))
 
-(defun gptel-agent-harness--context-tokens-from-data (fsm)
+(cl-defun gptel-agent-harness--context-tokens-from-data (fsm)
   "Estimate tokens from the full prompt payload of FSM.
 Includes system prompt, all user/assistant/tool messages, and
 tool definitions (schemas).
@@ -360,17 +397,21 @@ When `gptel-agent-harness-verbose' is non-nil, logs the
 serialized content to *gptel-agent-harness-debug*."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
-         (messages (or (plist-get data :messages)
-                       (plist-get data :input)
-                       (plist-get data :contents)))
-         (system (or (plist-get data :system)
-                     (plist-get data :system_instruction)
-                     (plist-get data :instructions)
-                     (plist-get data :systemInstruction)
-                     ""))
+         (messages (and (plistp data)
+                        (or (plist-get data :messages)
+                            (plist-get data :input)
+                            (plist-get data :contents))))
+         (system (and (plistp data)
+                      (or (plist-get data :system)
+                          (plist-get data :system_instruction)
+                          (plist-get data :instructions)
+                          (plist-get data :systemInstruction)
+                          "")))
          (total 0)
          (debug-buf (when gptel-agent-harness-verbose
                       (get-buffer-create "*gptel-agent-harness-debug*"))))
+    (unless (plistp data)
+      (cl-return-from gptel-agent-harness--context-tokens-from-data 0))
     (when debug-buf
       (with-current-buffer debug-buf
         (erase-buffer)
@@ -382,7 +423,8 @@ serialized content to *gptel-agent-harness-debug*."
         (let ((text (buffer-string)))
           (with-current-buffer debug-buf
             (insert "--- [system] ---\n" text "\n\n"))))
-      (when messages
+      (when (and (vectorp messages)
+                 (cl-every #'plistp messages))
         (cl-loop
          for msg across messages
          for role = (plist-get msg :role)
@@ -403,7 +445,9 @@ serialized content to *gptel-agent-harness-debug*."
              (with-current-buffer debug-buf
                (insert (format "--- [%s] ---\n%s\n\n" role text)))))))
       (when-let* ((tools (or (plist-get data :tools)
-                             (plist-get (plist-get data :toolConfig) :tools))))
+                             (let ((tool-config (plist-get data :toolConfig)))
+                               (and (plistp tool-config)
+                                    (plist-get tool-config :tools))))))
         (erase-buffer)
         (insert (format "%S" tools))
         (cl-incf total
@@ -412,7 +456,8 @@ serialized content to *gptel-agent-harness-debug*."
           (let ((text (buffer-string)))
             (with-current-buffer debug-buf
               (insert (format "--- [tools] (%d definitions) ---\n%s\n\n"
-                              (length tools) text)))))))
+                              (if (sequencep tools) (length tools) 0)
+                              text)))))))
     (when debug-buf
       (with-current-buffer debug-buf
         (insert (format "=== Total estimated tokens: %d ===\n" total)))
@@ -498,14 +543,25 @@ Returns nil when no text is found."
   (cond
    ((stringp content) content)
    ((null content) nil)
-   ((or (vectorp content) (listp content))
+   ((vectorp content)
     (let ((texts nil))
       (mapc (lambda (part)
               (cond
                ((stringp part) (push part texts))
-               ((and (listp part) (stringp (plist-get part :text)))
+               ((and (plistp part) (stringp (plist-get part :text)))
                 (push (plist-get part :text) texts))))
-            (if (vectorp content) (append content nil) content))
+            (append content nil))
+      (when texts
+        (let ((s (mapconcat #'identity (nreverse texts) "")))
+          (unless (string-empty-p s) s)))))
+   ((proper-list-p content)
+    (let ((texts nil))
+      (mapc (lambda (part)
+              (cond
+               ((stringp part) (push part texts))
+               ((and (plistp part) (stringp (plist-get part :text)))
+                (push (plist-get part :text) texts))))
+            content)
       (when texts
         (let ((s (mapconcat #'identity (nreverse texts) "")))
           (unless (string-empty-p s) s)))))
@@ -520,18 +576,21 @@ is reduced to its text via `gptel-agent-harness--content-to-text', so
 the caller can safely `insert' the result."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
-         (messages (or (plist-get data :messages)
-                       (plist-get data :input)      ; OpenAI Responses API
-                       (plist-get data :contents))) ; Gemini
+         (messages (and (plistp data)
+                        (or (plist-get data :messages)
+                            (plist-get data :input)      ; OpenAI Responses API
+                            (plist-get data :contents)))) ; Gemini
          (nudge gptel-agent-harness-nudge-message))
-    (cl-loop for i downfrom (1- (length messages)) to 0
-             for msg = (aref messages i)
-             for text = (and (equal (plist-get msg :role) "user")
-                             (gptel-agent-harness--content-to-text
-                              (or (plist-get msg :content)
-                                  (plist-get msg :parts))))
-             when (and text (not (equal text nudge)))
-             return text)))
+    (when (vectorp messages)
+      (cl-loop for i downfrom (1- (length messages)) to 0
+               for msg = (aref messages i)
+               for text = (and (plistp msg)
+                               (equal (plist-get msg :role) "user")
+                               (gptel-agent-harness--content-to-text
+                                (or (plist-get msg :content)
+                                    (plist-get msg :parts))))
+               when (and text (not (equal text nudge)))
+               return text))))
 
 (defun gptel-agent-harness--strip-compact-prefix ()
   "Strip the header and separator from current buffer, keeping the summary.
@@ -826,13 +885,14 @@ would break backend message ordering (e.g. Anthropic tool blocks).
 Handles the message containers of all supported backends: :messages
 \(OpenAI-compatible/Anthropic), :input (OpenAI Responses) and
 :contents (Gemini)."
-  (let* ((messages (or (plist-get data :messages)
-                       (plist-get data :input)
-                       (plist-get data :contents)
-                       []))
+  (let* ((raw (or (plist-get data :messages)
+                  (plist-get data :input)
+                  (plist-get data :contents)
+                  []))
+         (messages (if (vectorp raw) raw []))
          (last (and (> (length messages) 0)
                     (aref messages (1- (length messages))))))
-    (if (and last
+    (if (and (plistp last)
              (equal (plist-get last :role) "user")
              (stringp (or (plist-get last :content)
                           (plist-get last :parts))))
@@ -949,9 +1009,20 @@ NEW-STATE is the state to transition to."
       ;; skip the normal transition when compaction starts.  Pending
       ;; mode prompts are preserved so the resumed request still
       ;; receives them.
-      (unless (gptel-agent-harness--compact machine)
-        (gptel-agent-harness--inject-pending-prompts machine)
-        (funcall orig-fn machine new-state))
+      (let ((compacted
+             (condition-case err
+                 (gptel-agent-harness--compact machine)
+               (error
+                (when gptel-agent-harness-verbose
+                  (message "gptel-agent-harness: compaction error (WAIT) — %s"
+                           (error-message-string err)))
+                nil))))
+        ;; Only run the real transition when compaction did NOT start.
+        ;; If compaction started, `gptel-abort' already transitioned the
+        ;; FSM to ABRT, so we must not fire it again.
+        (unless compacted
+          (gptel-agent-harness--inject-pending-prompts machine)
+          (funcall orig-fn machine new-state)))
     (gptel-agent-harness--inject-pending-prompts machine)
     (funcall orig-fn machine new-state)))
 
@@ -974,9 +1045,20 @@ NEW-STATE is the state to transition to."
     (if (and (gptel-agent-harness--agentic-p machine)
              (gptel-agent-harness--top-level-p machine)
              (gptel-agent-harness--can-nudge-p machine))
-        (progn
-          (gptel-agent-harness--nudge machine)
-          (funcall orig-fn machine 'WAIT))
+        (let ((nudged
+               (condition-case err
+                   (gptel-agent-harness--nudge machine)
+                 (error
+                  (when gptel-agent-harness-verbose
+                    (message "gptel-agent-harness: terminal-state nudge error — %s"
+                             (error-message-string err)))
+                  nil))))
+          ;; Nudge succeeded → redirect to WAIT.  Otherwise (malformed
+          ;; :data or a throwing nudge) let the FSM terminate cleanly
+          ;; with its original state.  ORIG-FN is called exactly once.
+          (if nudged
+              (funcall orig-fn machine 'WAIT)
+            (funcall orig-fn machine new-state)))
       (funcall orig-fn machine new-state))))
 
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
@@ -1124,6 +1206,7 @@ Provides completion and context supervision."
         (gptel-agent-harness-agent-enable)
         (gptel-agent-harness-cache-enable)
         (gptel-agent-harness-safety-enable)
+        (gptel-agent-harness-fsm-enable)
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
         (when (boundp 'gptel-mode-map)
@@ -1149,6 +1232,7 @@ Provides completion and context supervision."
     (gptel-agent-harness-tools-disable)
     (gptel-agent-harness-cache-disable)
     (gptel-agent-harness-safety-disable)
+    (gptel-agent-harness-fsm-disable)
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
     (when (boundp 'gptel-mode-map)
