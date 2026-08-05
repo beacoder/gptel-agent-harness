@@ -63,8 +63,10 @@ reports the error.  INFO is the request info plist."
     (cond
      ((not (buffer-live-p buf))
       (gptel-agent-harness-commands--run-post-funcs info)
-      (user-error "Session buffer \"%s\" is no longer available"
-                  (buffer-name buf)))
+      ;; Do not signal: this runs from a network callback, where an error
+      ;; escapes into gptel's response machinery instead of reaching a
+      ;; caller who could handle it.  The result is simply dropped.
+      (message "gptel-agent-harness: session buffer is gone, compaction result dropped"))
      ;; API error — resp is nil
      ((null resp)
       (plist-put info :error
@@ -240,11 +242,20 @@ auto-discovered custom commands."
       (setq-local gptel-temperature 0)
       (setq gptel-agent-harness--project-dir dir)
       (gptel-agent-update)
-      ;; Enable tools for this buffer
+      ;; Enable tools for this buffer.  Resolve each name defensively:
+      ;; `gptel-get-tool' signals for an unknown name, and tools the
+      ;; harness registers itself (Question, PlanExit) only exist once
+      ;; `gptel-agent-harness-mode' is on.  These commands are autoloaded,
+      ;; so they can run before that — a missing tool must degrade to a
+      ;; smaller tool set, not abort the command.
       (setq-local gptel-use-tools t)
       (setq-local gptel-tools
-                  (mapcar #'gptel-get-tool
-                          gptel-agent-harness--default-tools))
+                  (delq nil
+                        (mapcar
+                         (lambda (name)
+                           (with-demoted-errors "gptel-agent-harness: %S"
+                             (gptel-get-tool name)))
+                         gptel-agent-harness--default-tools)))
       (gptel-agent-harness--setup-session)
       (gptel--update-status status 'warning)
       (goto-char (point-max))
@@ -515,26 +526,35 @@ region is active, uses region content instead of full buffer."
                        (if (string-blank-p response)
                            (progn
                              (message "Summary returned empty response")
-                             (with-current-buffer buf
-                               (gptel--update-status " Failed" 'error)))
-                         (with-current-buffer buf
-                           (goto-char (point-max))
-                           (insert "\n" response "\n")
-                           (gptel-agent-harness--auto-save-session)
-                           (gptel--update-status " Ready" 'success))))
+                             (when (buffer-live-p buf)
+                               (with-current-buffer buf
+                                 (gptel--update-status " Failed" 'error))))
+                         (when (buffer-live-p buf)
+                           (with-current-buffer buf
+                             (goto-char (point-max))
+                             (insert "\n" response "\n")
+                             (gptel-agent-harness--auto-save-session)
+                             (gptel--update-status " Ready" 'success)))))
                       (`(reasoning . ,_)   ;skip reasoning, await actual content
-                       (with-current-buffer buf
-                         (gptel--update-status " Summarizing..." 'warning)))
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (gptel--update-status " Summarizing..." 'warning))))
                       (`t                   ;streaming end-of-stream marker
-                       (gptel--update-status " Ready" 'success))
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (gptel--update-status " Ready" 'success))))
                       (`abort
                        (message "Summary request aborted")
-                       (gptel--update-status " Aborted" 'error))
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (gptel--update-status " Aborted" 'error))))
                       (_
-                       (if (member (plist-get info :http-status) '("200" "100"))
-                           (gptel--update-status " Ready" 'success)
-                         (message "Summary request failed: %s" (plist-get info :status))
-                         (gptel--update-status " Failed" 'error)))))))))
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (if (member (plist-get info :http-status) '("200" "100"))
+                               (gptel--update-status " Ready" 'success)
+                             (message "Summary request failed: %s" (plist-get info :status))
+                             (gptel--update-status " Failed" 'error)))))))))))
 
 (provide 'gptel-agent-harness-commands)
 
