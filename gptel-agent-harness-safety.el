@@ -82,7 +82,7 @@ containing a match are also blocked."
   :type '(repeat regexp)
   :group 'gptel-agent-harness)
 
-(defcustom gptel-agent-harness-safety-bash-timeout 120
+(defcustom gptel-agent-harness-safety-bash-timeout 300
   "Maximum seconds a Bash tool call may run before being killed.
 0 or nil disables the timeout."
   :type '(choice (const :tag "Disabled" nil)
