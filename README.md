@@ -214,7 +214,10 @@ confirmation (which still runs first and is controlled by
 
 Read/Glob/Grep/Edit/Insert/Write operations whose expanded path matches
 `gptel-agent-harness-safety-forbidden-paths` are rejected with an error before
-any side effect. Bash commands referencing such paths are blocked as well.
+any side effect. Bash commands are blocked as well: the command is split into
+tokens and each is matched as a path, so anchored regexps (the default is
+`` \`/mnt/ ``) work on the paths a command references rather than on the raw
+command string.
 
 ### Bash Timeout
 
@@ -265,7 +268,7 @@ the snapshot stack.
 
 ### Options
 
-- `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("/mnt/")`).
+- `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("\\`/mnt/")`, anchored so unrelated paths containing a `mnt` component are not blocked).
 - `gptel-agent-harness-safety-bash-timeout` — Max Bash runtime in seconds (default: 300, nil disables).
 - `gptel-agent-harness-safety-bash-approval` — Approval policy: nil / `confirm` / `block`.
 - `gptel-agent-harness-safety-bash-dangerous-patterns` — Prompted tier (respects `gptel-confirm-tool-calls`).
