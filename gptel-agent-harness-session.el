@@ -457,14 +457,23 @@ This opens the file, enables `gptel-mode', and restores all state."
     ;; Restore tools from saved tool names when no preset handles it.
     ;; Fall back to this path when a preset was recorded but cannot be
     ;; resolved (e.g. harness presets not registered yet), so tools are
-    ;; not silently lost.
+    ;; not silently lost.  A tool name that no longer resolves is skipped
+    ;; rather than aborting the whole restore.
+    ;;
+    ;; Uses an explicit `condition-case' rather than `with-demoted-errors',
+    ;; which expands to `condition-case-unless-debug' and therefore
+    ;; re-signals when `debug-on-error' is non-nil — restoring a session
+    ;; would then break for anyone debugging.
     (when (and (bound-and-true-p gptel--tool-names)
                (or (not gptel--preset)
                    (not (gptel-get-preset gptel--preset))))
       (when-let* ((tools (cl-loop for tname in gptel--tool-names
-                                   for tool = (with-demoted-errors
-                                                  "gptel-agent-harness: %S"
-                                                (gptel-get-tool tname))
+                                   for tool = (condition-case err
+                                                  (gptel-get-tool tname)
+                                                (error
+                                                 (message "gptel-agent-harness: tool %S unavailable — %s"
+                                                          tname (error-message-string err))
+                                                 nil))
                                    if tool collect tool)))
         (setq-local gptel-tools tools)
         (setq-local gptel-use-tools t)))
