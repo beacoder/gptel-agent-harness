@@ -814,6 +814,10 @@ Covers:
           (should (advice-member-p
                    #'gptel-agent-harness-agent--apply-subagent-settings
                    'gptel-agent--task))
+          ;; Sub-agent callback guard advice installed
+          (should (advice-member-p
+                   #'gptel-agent-harness-agent--task-callback-guard
+                   'gptel-agent--task))
           ;; Second enable preserves originals
           (gptel-agent-harness-agent-enable)
           (should (equal gptel-agent-harness-agent--orig-dirs orig-dirs))
@@ -825,6 +829,9 @@ Covers:
             (should (eq (symbol-function 'gptel-agent) orig-agent)))
           (should-not (advice-member-p
                        #'gptel-agent-harness-agent--apply-subagent-settings
+                       'gptel-agent--task))
+          (should-not (advice-member-p
+                       #'gptel-agent-harness-agent--task-callback-guard
                        'gptel-agent--task))
           (should-not gptel-agent-harness-tools--orig-glob)
           (should-not gptel-agent-harness-tools--orig-grep)
@@ -918,6 +925,64 @@ Covers:
                             :model "cheap-model")))
     (should (equal registered orig))))
 
+(ert-deftest gptel-agent-harness-test-subagent-callback-guard ()
+  "The sub-agent callback guard never signals and keeps the parent moving.
+An unexpected response type (vector) calls MAIN-CB with an error string;
+stream markers (`t', `(reasoning . _)') are ignored; a normal string
+passes through."
+  (let ((main-cb-calls nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest args)
+                 (let ((cb (plist-get args :callback)))
+                   (funcall cb (vector 1 2) '(:info nil))))))
+      (gptel-agent-harness-agent--task-callback-guard
+       (lambda (main-cb _agent-type _desc _prompt)
+         ;; Simulate gptel-agent--task: call gptel-request with a callback
+         ;; whose pcase has no `_' fallback (raises on a vector).
+         (gptel-request "prompt"
+           :callback (lambda (resp _info)
+                       (pcase resp
+                         ((pred stringp) (funcall main-cb resp))
+                         (_ (error "pcase-no-match"))))))
+       (lambda (result) (push result main-cb-calls))
+       "subagent" "desc" "prompt"))
+    (should (= 1 (length main-cb-calls)))
+    (should (string-match-p "Error: Task \"desc\" returned an unexpected response"
+                            (car main-cb-calls))))
+  ;; Stream markers are ignored (main-cb not called)
+  (let ((main-cb-calls nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest args)
+                 (let ((cb (plist-get args :callback)))
+                   (funcall cb t '(:info nil))
+                   (funcall cb '(reasoning . "thinking") '(:info nil))))))
+      (gptel-agent-harness-agent--task-callback-guard
+       (lambda (main-cb _agent-type _desc _prompt)
+         (gptel-request "prompt"
+           :callback (lambda (resp _info)
+                       (pcase resp
+                         ((pred stringp) (funcall main-cb resp))
+                         (_ (error "pcase-no-match"))))))
+       (lambda (result) (push result main-cb-calls))
+       "subagent" "desc" "prompt"))
+    (should (null main-cb-calls)))
+  ;; Normal string response passes through
+  (let ((main-cb-calls nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest args)
+                 (let ((cb (plist-get args :callback)))
+                   (funcall cb "output" '(:info nil))))))
+      (gptel-agent-harness-agent--task-callback-guard
+       (lambda (main-cb _agent-type _desc _prompt)
+         (gptel-request "prompt"
+           :callback (lambda (resp _info)
+                       (pcase resp
+                         ((pred stringp) (funcall main-cb resp))
+                         (_ (error "pcase-no-match"))))))
+       (lambda (result) (push result main-cb-calls))
+       "subagent" "desc" "prompt"))
+    (should (equal main-cb-calls '("output")))))
+
 (ert-deftest gptel-agent-harness-test-fsm-helpers ()
   "Test `--buffer', `--agentic-p', `--top-level-p', `--with-fsm-buffer'."
   (gptel-agent-harness-test--with-buffer buf
@@ -957,6 +1022,52 @@ Covers:
                     :messages messages))
              (orig-count (gptel-agent-harness--get-nudges fsm)))
         (gptel-agent-harness--nudge fsm)
+        (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))))
+
+(ert-deftest gptel-agent-harness-test-nudge-malformed-data ()
+  "`--nudge' never signals on malformed `:data' and returns nil.
+A buffer/string `:data' (gptel assembles `:data' lazily) must not
+reach `gptel--inject-prompt'; the counter is still bumped and nil is
+returned.  A plist `:data' returns t."
+  (gptel-agent-harness-test--with-buffer buf
+    (let ((inject-called nil))
+      (cl-letf (((symbol-function 'gptel--inject-prompt)
+                 (lambda (&rest _) (setq inject-called t))))
+        ;; Buffer as :data
+        (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                      :tools (vector (list :type "function"))
+                      :messages (vector (list :role "user" :content "hi"))))
+               (info (gptel-fsm-info fsm)))
+          (plist-put info :data (current-buffer))
+          (let ((orig-count (gptel-agent-harness--get-nudges fsm)))
+            (should-not (gptel-agent-harness--nudge fsm))
+            (should-not inject-called)
+            (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))
+        ;; String as :data
+        (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                      :tools (vector (list :type "function"))
+                      :messages (vector (list :role "user" :content "hi"))))
+               (info (gptel-fsm-info fsm)))
+          (plist-put info :data "not a plist")
+          (should-not (gptel-agent-harness--nudge fsm))
+          (should-not inject-called))
+        ;; Plist :data → injected, returns t
+        (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                      :tools (vector (list :type "function"))
+                      :messages (vector (list :role "user" :content "hi")))))
+          (should (gptel-agent-harness--nudge fsm))
+          (should inject-called))))))
+
+(ert-deftest gptel-agent-harness-test-nudge-inject-error ()
+  "`--nudge' returns nil when `gptel--inject-prompt' signals."
+  (gptel-agent-harness-test--with-buffer buf
+    (cl-letf (((symbol-function 'gptel--inject-prompt)
+               (lambda (&rest _) (error "boom"))))
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :tools (vector (list :type "function"))
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-count (gptel-agent-harness--get-nudges fsm)))
+        (should-not (gptel-agent-harness--nudge fsm))
         (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))))
 
 ;;;; Build/Plan Mode Tests
@@ -1380,6 +1491,92 @@ Verifies plain strings, multimodal vector/list content, and Gemini
   (should-not (gptel-agent-harness--content-to-text
                (vector '(:type "image_url" :image_url (:url "x"))))))
 
+;;;; Malformed Data Defensiveness
+
+(ert-deftest gptel-agent-harness-test-context-tokens-from-data-malformed ()
+  "`--context-tokens-from-data' never signals on malformed data."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      ;; Non-plist :data (buffer/string) → 0
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :messages (vector (list :role "user" :content "hi"))))
+             (info (gptel-fsm-info fsm)))
+        (plist-put info :data (current-buffer))
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 0)))
+      ;; :messages as a list (not vector) → no error
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :messages (list (list :role "user" :content "hi")))))
+        (should (integerp (gptel-agent-harness--context-tokens-from-data fsm))))
+      ;; :messages vector with string/number entries → no error
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :messages (vector "raw string" 42
+                                     (list :role "user" :content "hi")))))
+        (should (integerp (gptel-agent-harness--context-tokens-from-data fsm))))
+      ;; :toolConfig as a string → no error
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :messages (vector (list :role "user" :content "hi"))
+                   :toolConfig "x")))
+        (should (integerp (gptel-agent-harness--context-tokens-from-data fsm))))
+      ;; :tool_calls as a string → no error
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :messages (vector (list :role "assistant"
+                                           :content nil
+                                           :tool_calls "str")))))
+        (should (integerp (gptel-agent-harness--context-tokens-from-data fsm)))))))
+
+(ert-deftest gptel-agent-harness-test-last-user-request-malformed ()
+  "`--last-user-request' returns nil on malformed data, never signals."
+  (gptel-agent-harness-test--with-buffer buf
+    ;; Non-plist :data → nil
+    (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                  :messages (vector (list :role "user" :content "hi"))))
+           (info (gptel-fsm-info fsm)))
+      (plist-put info :data "oops")
+      (should-not (gptel-agent-harness--last-user-request fsm)))
+    ;; :messages as a list → nil
+    (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                 :messages (list (list :role "user" :content "hi")))))
+      (should-not (gptel-agent-harness--last-user-request fsm)))
+    ;; :messages vector with non-plist entries → nil, no error
+    (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                 :messages (vector "raw" 42))))
+      (should-not (gptel-agent-harness--last-user-request fsm)))))
+
+(ert-deftest gptel-agent-harness-test-request-injection-position-malformed ()
+  "`--request-injection-position' handles non-vector message containers."
+  (let ((data (list :messages "not a vector")))
+    (should (= 0 (gptel-agent-harness--request-injection-position data))))
+  (let ((data (list :messages (list (list :role "user" :content "hi")))))
+    (should (= 0 (gptel-agent-harness--request-injection-position data))))
+  (let ((data (list :messages (vector "raw" 42))))
+    (should (= 2 (gptel-agent-harness--request-injection-position data)))))
+
+(ert-deftest gptel-agent-harness-test-extract-content-malformed ()
+  "Content extractors never signal on malformed parts."
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content (vector 42 "str" '(:text "ok")))
+    (should (string-match-p "ok" (buffer-string))))
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content (list 42 "str" '(:text "ok")))
+    (should (string-match-p "ok" (buffer-string))))
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content (list (list :text "a") (list :text "b")))
+    (should (string-match-p "ab" (buffer-string))))
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content 42)
+    (should (string-match-p "42" (buffer-string)))))
+
+(ert-deftest gptel-agent-harness-test-content-to-text-malformed ()
+  "`--content-to-text' never signals on malformed content."
+  ;; Non-plist parts are skipped; bare strings are still collected.
+  (should (equal (gptel-agent-harness--content-to-text (vector 42 "str")) "str"))
+  (should (equal (gptel-agent-harness--content-to-text (list 42 "str")) "str"))
+  ;; Non-sequence/non-string content → nil
+  (should-not (gptel-agent-harness--content-to-text 42))
+  ;; Non-plist part in a list is skipped, text still gathered
+  (should (equal (gptel-agent-harness--content-to-text (list (list :text "a") 42))
+                 "a")))
+
 ;;;; Transition Advice (Central Supervisor)
 
 (ert-deftest gptel-agent-harness-test-transition-advice ()
@@ -1463,6 +1660,99 @@ Verifies plain strings, multimodal vector/list content, and Gemini
           (should (= (gptel-agent-harness--get-nudges fsm) 0))
           ;; compacting-p unchanged
           (should (eq (with-current-buffer buf gptel-agent-harness--compacting-p) t)))))))
+
+(ert-deftest gptel-agent-harness-test-terminal-state-nudge-fallback ()
+  "`--handle-terminal-state' falls back to the original state on nudge failure.
+Malformed `:data' (nudge returns nil) or a throwing `gptel--inject-prompt'
+must call ORIG-FN with the ORIGINAL new-state (DONE), never WAIT, and no
+error may escape."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--compacting-p nil)
+      (setq gptel-agent-harness--nudge-count 0))
+    (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools tools
+                  :messages (vector (list :role "user" :content "hi"))))
+           (orig-called nil)
+           (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+      ;; Malformed :data → nudge returns nil → fallback to DONE
+      (plist-put (gptel-fsm-info fsm) :data (current-buffer))
+      (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE)
+      (should (eq orig-called 'DONE)))
+    (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools tools
+                  :messages (vector (list :role "user" :content "hi"))))
+           (orig-called nil)
+           (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+      ;; `gptel--inject-prompt' throws → fallback to DONE
+      (cl-letf (((symbol-function 'gptel--inject-prompt)
+                 (lambda (&rest _) (error "boom"))))
+        (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE)
+        (should (eq orig-called 'DONE))))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-compaction-error-fallback ()
+  "`--handle-wait-state' falls back to the real transition when compaction errors.
+A throwing `--compact' must not skip the transition; ORIG-FN is called
+with WAIT and no error escapes."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--context-ratio 0.80)
+      (setq gptel-agent-harness--compacting-p nil)
+      (setq gptel-agent-harness--nudge-count 0))
+    (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools tools
+                  :messages (vector (list :role "user" :content "hi"))))
+           (orig-called nil)
+           (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+      (cl-letf (((symbol-function 'gptel-agent-harness--compact)
+                 (lambda (&rest _) (error "boom"))))
+        (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
+        (should (eq orig-called 'WAIT))))))
+
+(ert-deftest gptel-agent-harness-test-terminal-state-orig-fn-once ()
+  "`--handle-terminal-state' calls ORIG-FN exactly once even when it throws.
+The error handler must not re-invoke ORIG-FN (which would double-fire
+the transition / request)."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--compacting-p nil)
+      (setq gptel-agent-harness--nudge-count 0))
+    (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools tools
+                  :messages (vector (list :role "user" :content "hi"))))
+           (calls 0)
+           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "orig-fn boom"))))
+      (should-error (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE))
+      (should (= calls 1)))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-orig-fn-once ()
+  "`--handle-wait-state' calls ORIG-FN exactly once even when it throws.
+The error handler must not re-invoke ORIG-FN (which would double-fire
+the transition / request)."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--context-ratio 0.80)
+      (setq gptel-agent-harness--compacting-p nil)
+      (setq gptel-agent-harness--nudge-count 0))
+    (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools tools
+                  :messages (vector (list :role "user" :content "hi"))))
+           (calls 0)
+           (orig-fn (lambda (&optional _m _ns) (cl-incf calls) (error "orig-fn boom"))))
+      (cl-letf (((symbol-function 'gptel-agent-harness--compact)
+                 (lambda (&rest _) nil)))
+        (should-error (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT))
+        (should (= calls 1))))))
 
 (ert-deftest gptel-agent-harness-test-write-local-vars ()
   "Test `--write-local-vars' serialization."
