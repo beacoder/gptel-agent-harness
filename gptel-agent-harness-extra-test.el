@@ -167,8 +167,24 @@ top-level-p) see them."
   (should (gptel-agent-harness-safety--path-forbidden-p "/mnt/secret"))
   (should (gptel-agent-harness-safety--path-forbidden-p "/mnt/data/file.txt"))
   (should-not (gptel-agent-harness-safety--path-forbidden-p "/tmp/foo"))
+  ;; The default is anchored, so an unrelated path that merely contains a
+  ;; `mnt' component is not blocked.
+  (should-not (gptel-agent-harness-safety--path-forbidden-p "/home/u/mnt/data"))
   (should-not (gptel-agent-harness-safety--path-forbidden-p nil))
   (should-not (gptel-agent-harness-safety--path-forbidden-p 42)))
+
+(ert-deftest gptel-agent-harness-test-safety-command-forbidden-p ()
+  "Bash commands are matched token-wise, so anchored regexps still work.
+
+Matching the anchored default against the whole command string would
+never fire, since the string starts with the command name."
+  (should (gptel-agent-harness-safety--command-forbidden-p "cat /mnt/secret"))
+  (should (gptel-agent-harness-safety--command-forbidden-p "wc -l </mnt/a"))
+  (should (gptel-agent-harness-safety--command-forbidden-p "diff /tmp/a /mnt/b"))
+  (should-not (gptel-agent-harness-safety--command-forbidden-p "ls /tmp"))
+  ;; Not the forbidden top-level directory
+  (should-not (gptel-agent-harness-safety--command-forbidden-p "ls /home/u/mnt/x"))
+  (should-not (gptel-agent-harness-safety--command-forbidden-p nil)))
 
 (ert-deftest gptel-agent-harness-test-safety-check-path-signals ()
   "Test `--check-path' errors on forbidden paths, passes on safe ones."
@@ -321,9 +337,22 @@ sets `gptel-agent-harness--plan-file' (both buffer-local)."
       (should-not (car result))
       (should (string-match-p "forbidden" (or (cdr result) ""))))
     ;; Mutating commands are refused, with a plan-mode message.
+    ;; The git list deliberately includes subcommands that read like
+    ;; inspection but write to the tree, the object store or the
+    ;; filesystem, plus the in-place edit flags of whitelisted tools.
     (dolist (cmd '("rm -rf /tmp/cache" "touch /tmp/x" "mkdir -p /tmp/x"
                    "echo hi > /tmp/x" "git commit -m x" "git push origin main"
                    "git -C /tmp commit -m x" "git --no-pager push"
+                   "git apply patch.diff" "git am patch.eml"
+                   "git cherry-pick abc123" "git revert abc123"
+                   "git init" "git clone https://host/repo"
+                   "git worktree add /tmp/wt" "git submodule update --init"
+                   "git format-patch -1" "git archive HEAD -o /tmp/a.tar"
+                   "git bundle create /tmp/b HEAD" "git update-ref refs/x HEAD"
+                   "git update-index --refresh" "git hash-object -w f"
+                   "git sparse-checkout set x" "git reflog delete HEAD@{0}"
+                   "yq -i '.a=1' f.yaml" "yq --inplace '.a=1' f.yaml"
+                   "jq -i . f.json"
                    "sudo apt-get update"))
       (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
         (should-not (car result))
@@ -394,10 +423,27 @@ sets `gptel-agent-harness--plan-file' (both buffer-local)."
                    "cat a | grep b"
                    "git log --oneline"
                    "cd /tmp && ls -la"
-                   "FOO=bar ls"))
+                   "FOO=bar ls"
+                   ;; Read-only uses of tools whose write flags are denied
+                   "yq '.a' f.yaml"
+                   "jq '.a' f.json"))
       (let ((result (gptel-agent-harness-test-safety--run-bash-advice cmd)))
         (should (car result))
         (should-not (cdr result))))))
+
+(ert-deftest gptel-agent-harness-test-safety-catastrophic-outranks-plan-mode ()
+  "The catastrophic tier is checked before the plan-mode read-only gate.
+
+Otherwise a command the read-only whitelist happens to accept would
+escape the floor that is documented as unconditional."
+  (gptel-agent-harness-test-safety--with-plan-mode t "/tmp/proj/PLAN.md"
+    ;; `echo shutdown' passes the read-only whitelist (first word `echo',
+    ;; nothing mutating) yet matches a catastrophic pattern.
+    (should (gptel-agent-harness-safety--bash-read-only-p "echo shutdown"))
+    (should (gptel-agent-harness-safety--bash-catastrophic-p "echo shutdown"))
+    (let ((result (gptel-agent-harness-test-safety--run-bash-advice "echo shutdown")))
+      (should-not (car result))
+      (should (string-match-p "catastrophic" (or (cdr result) ""))))))
 
 (ert-deftest gptel-agent-harness-test-set-mode-refuses-forbidden-plan-file ()
   "Switching to plan mode refuses to create the plan file under a forbidden path."
@@ -497,10 +543,30 @@ invoked, ERROR-MSG the callback string otherwise."
         (should (string-match-p "blocked" (or (cdr result) "")))))))
 
 (ert-deftest gptel-agent-harness-test-safety-bash-forbidden-path-blocked ()
-  "Bash commands referencing a forbidden path are always refused."
+  "Bash commands referencing a forbidden path are always refused.
+This is the advice-level counterpart of
+`gptel-agent-harness-test-safety-command-forbidden-p': that test pins the
+predicate, this one pins the refusal and its message."
   (let ((result (gptel-agent-harness-test-safety--run-bash-advice "cat /mnt/secret")))
     (should-not (car result))
     (should (string-match-p "forbidden" (or (cdr result) "")))))
+
+(ert-deftest gptel-agent-harness-test-safety-dangerous-rm-spellings ()
+  "Every recursive `rm' spelling is classified dangerous, not just `-rf'.
+
+Enumerating flag forms let `rm -fr', `rm -rvf' and `rm --recursive' run
+without an approval prompt."
+  (dolist (cmd '("rm -r /home/u/x" "rm -rf /home/u/x" "rm -fr /home/u/x"
+                 "rm -rvf /home/u/x" "rm -vfr /home/u/x" "rm -R /home/u/x"
+                 "rm -r -f /home/u/x" "rm -f -r /home/u/x"
+                 "rm --recursive /home/u/x"
+                 "rm --recursive --force /home/u/x"
+                 "rm --force --recursive /home/u/x"))
+    (should (gptel-agent-harness-safety--bash-dangerous-p cmd)))
+  ;; Non-recursive removals and unrelated commands stay out of the tier.
+  (dolist (cmd '("rm /home/u/x" "rm -f /home/u/x" "rm -i /home/u/x"
+                 "npm run build" "confirm --reset" "ls -R /tmp"))
+    (should-not (gptel-agent-harness-safety--bash-dangerous-p cmd))))
 
 (ert-deftest gptel-agent-harness-test-safety-dangerous-no-prompt-when-confirm-nil ()
   "Dangerous commands run without prompting when confirm-tool-calls is nil."
@@ -618,18 +684,44 @@ invoked, ERROR-MSG the callback string otherwise."
       (should-not (process-live-p proc)))))
 
 (ert-deftest gptel-agent-harness-test-safety-bash-timeout-kills-process ()
-  "A hung Bash command is killed after the configured timeout."
+  "A hung Bash command is killed after the configured timeout.
+
+The tool callback must fire exactly once, with the timeout message.
+`delete-process' runs the upstream sentinel synchronously, which would
+otherwise deliver a second, uninformative \"exit code 9\" result first —
+and since the FSM keeps the first result, the model would never learn
+the command timed out."
   (let ((gptel-agent-harness-safety-bash-timeout 1)
-        (done nil) (result nil))
+        (results nil))
     (gptel-agent-harness-safety--execute-bash-advice
      (lambda (cb cmd) (gptel-agent--execute-bash cb cmd))
-     (lambda (msg) (setq result msg done t))
+     (lambda (msg) (push msg results))
      "sleep 10")
+    (let ((t0 (float-time)))
+      (while (and (null results) (< (- (float-time) t0) 8))
+        (accept-process-output nil 0.1)))
+    ;; Give any stray second callback a chance to arrive before counting.
+    (dotimes (_ 5) (accept-process-output nil 0.1))
+    (should (= (length results) 1))
+    (should (string-match-p "timed out" (car results)))))
+
+(ert-deftest gptel-agent-harness-test-safety-bash-timeout-timer-cancelled ()
+  "A command that finishes normally leaves no armed timeout timer behind."
+  (let ((gptel-agent-harness-safety-bash-timeout 300)
+        (done nil))
+    (gptel-agent-harness-safety--execute-bash-advice
+     (lambda (cb cmd) (gptel-agent--execute-bash cb cmd))
+     (lambda (_msg) (setq done t))
+     "true")
     (let ((t0 (float-time)))
       (while (and (not done) (< (- (float-time) t0) 8))
         (accept-process-output nil 0.1)))
     (should done)
-    (should (string-match-p "timed out" (or result "")))))
+    (should (= 0 (cl-count-if
+                  (lambda (tm)
+                    (eq (timer--function tm)
+                        #'gptel-agent-harness-safety--timeout-callback))
+                  timer-list)))))
 
 (ert-deftest gptel-agent-harness-test-safety-bash-timeout-disabled ()
   "A nil timeout does not wrap the process."
@@ -777,9 +869,7 @@ invoked, ERROR-MSG the callback string otherwise."
 
 (ert-deftest gptel-agent-harness-test-tools-enable-disable-idempotent ()
   "Test tools enable/disable: overrides, restores, and idempotency."
-  (let ((gptel-agent-harness-tools--orig-glob nil)
-        (gptel-agent-harness-tools--orig-grep nil)
-        (orig-glob (symbol-function 'gptel-agent--glob))
+  (let ((orig-glob (symbol-function 'gptel-agent--glob))
         (orig-grep (symbol-function 'gptel-agent--grep)))
     (unwind-protect
         (progn
@@ -787,22 +877,25 @@ invoked, ERROR-MSG the callback string otherwise."
           ;; After enable, glob/grep should NOT be the originals
           (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
           (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
-          ;; The originals should be saved
-          (should (eq gptel-agent-harness-tools--orig-glob orig-glob))
-          (should (eq gptel-agent-harness-tools--orig-grep orig-grep))
-          ;; Second enable should not lose the originals
+          ;; The harness overrides are installed as advice
+          (should (advice-member-p #'gptel-agent-harness-tools--glob
+                                  'gptel-agent--glob))
+          (should (advice-member-p #'gptel-agent-harness-tools--grep
+                                  'gptel-agent--grep))
+          ;; Second enable is a no-op: advice-add does not double-install,
+          ;; so a single disable still fully restores the originals.
           (gptel-agent-harness-tools-enable)
-          (should (eq gptel-agent-harness-tools--orig-glob orig-glob))
-          (should (eq gptel-agent-harness-tools--orig-grep orig-grep))
           ;; Disable should restore
           (gptel-agent-harness-tools-disable)
           (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
-          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
+          (should (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--glob
+                                      'gptel-agent--glob))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--grep
+                                      'gptel-agent--grep)))
       ;; Safety restore
       (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (setq gptel-agent-harness-tools--orig-glob nil)
-      (setq gptel-agent-harness-tools--orig-grep nil))))
+      (fset 'gptel-agent--grep orig-grep))))
 
 ;;;; Question Tool Tests
 
@@ -992,6 +1085,28 @@ invoked, ERROR-MSG the callback string otherwise."
         (should (string-match-p "tracked\\.txt" result))
         (should-not (string-match-p "ignored\\.txt" result))))))
 
+(ert-deftest gptel-agent-harness-test-glob-git-path-needs-no-tree ()
+  "Inside a git repo, glob works even when `tree' is not installed.
+
+The git strategy never invokes `tree', so requiring it up front made the
+tool unusable on machines without it."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (with-temp-file (expand-file-name "hit.txt" temp-dir) (insert "x"))
+      (cl-letf* ((orig-find (symbol-function 'executable-find))
+                 ((symbol-function 'executable-find)
+                  (lambda (cmd &rest args)
+                    (unless (equal cmd "tree")
+                      (apply orig-find cmd args)))))
+        (should-not (executable-find "tree"))
+        (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
+          (should (string-match-p "hit\\.txt" result))))
+      ;; Outside git, `tree' is still required and its absence is reported.
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+        (should-error (gptel-agent-harness-tools--glob "*.txt" temp-dir)
+                      :type 'error)))))
+
 ;;;; Grep Tool Tests
 
 (ert-deftest gptel-agent-harness-test-grep-nonexistent-path-errors ()
@@ -1059,24 +1174,45 @@ invoked, ERROR-MSG the callback string otherwise."
 
 ;;;; Cache Module Tests (gptel-agent-harness-cache)
 
-(ert-deftest gptel-agent-harness-test-cache-make-key-canonicalizes ()
-  "Test cache key canonicalizes paths but leaves non-paths alone."
+(ert-deftest gptel-agent-harness-test-cache-make-key-verbatim ()
+  "Test cache key uses arguments verbatim, without guessing paths.
+
+Canonicalization belongs to the caching advice, which expands paths
+before building the key.  `--make-key' must not expand anything itself:
+a Grep regexp such as \".*foo\" looks like a relative file name but is a
+pattern, and expanding it would bind the key to `default-directory'."
   (let ((default-directory "/home/user/project/"))
-    ;; Absolute path is preserved
-    (let ((key (gptel-agent-harness-cache--make-key 'read '("/tmp/foo.el" 1 50))))
-      (should (equal key '(read "/tmp/foo.el" 1 50))))
-    ;; Relative path starting with . is expanded
-    (let ((key (gptel-agent-harness-cache--make-key 'glob '("*.el" "./src" nil))))
-      (should (equal (nth 2 key) "/home/user/project/src")))
-    ;; Tilde path is expanded
-    (let ((key (gptel-agent-harness-cache--make-key 'read '("~/foo.el" nil nil))))
-      (should (string-prefix-p (expand-file-name "~") (nth 1 key))))
-    ;; Non-path strings (patterns) are left alone
-    (let ((key (gptel-agent-harness-cache--make-key 'grep '("defun.*foo" "/tmp" nil nil))))
-      (should (equal (nth 1 key) "defun.*foo")))
+    (should (equal (gptel-agent-harness-cache--make-key 'read '("/tmp/foo.el" 1 50))
+                   '(read "/tmp/foo.el" 1 50)))
+    ;; A dot-prefixed regexp stays a regexp
+    (should (equal (gptel-agent-harness-cache--make-key 'grep '(".*foo" "/tmp" nil nil))
+                   '(grep ".*foo" "/tmp" nil nil)))
+    (should (equal (gptel-agent-harness-cache--make-key 'grep '("defun.*foo" "/tmp" nil nil))
+                   '(grep "defun.*foo" "/tmp" nil nil)))
     ;; nil values pass through
-    (let ((key (gptel-agent-harness-cache--make-key 'read '("/tmp/f.el" nil nil))))
-      (should (equal key '(read "/tmp/f.el" nil nil))))))
+    (should (equal (gptel-agent-harness-cache--make-key 'read '("/tmp/f.el" nil nil))
+                   '(read "/tmp/f.el" nil nil)))))
+
+(ert-deftest gptel-agent-harness-test-cache-advice-canonicalizes-path ()
+  "The Read advice expands FILENAME, so relative and absolute paths share a key."
+  (gptel-agent-harness-test--with-temp-dir dir
+    (let ((file (expand-file-name "data.txt" dir))
+          (calls 0))
+      (with-temp-file file (insert "payload"))
+      (with-temp-buffer
+        (let ((gptel-agent-harness-cache-enabled t)
+              (default-directory dir)
+              (orig (lambda (&rest _) (cl-incf calls) "payload")))
+          (gptel-agent-harness-cache--ensure-tables)
+          ;; Absolute path: miss, then stored and marked seen
+          (should (equal (gptel-agent-harness-cache--read-advice orig file nil nil)
+                         "payload"))
+          ;; Same file named relatively: hits the same entry (deduplicated),
+          ;; so ORIG-FN is not called a second time.
+          (let ((again (gptel-agent-harness-cache--read-advice
+                        orig "data.txt" nil nil)))
+            (should (string-match-p "\\`\\[Cached:" again)))
+          (should (= calls 1)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-store-and-lookup ()
   "Test basic store and lookup operations."
