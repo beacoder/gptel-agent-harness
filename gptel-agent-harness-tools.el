@@ -45,12 +45,6 @@
 
 ;;;; Internal State
 
-(defvar gptel-agent-harness-tools--orig-glob nil
-  "Original `gptel-agent--glob' function, saved before override.")
-
-(defvar gptel-agent-harness-tools--orig-grep nil
-  "Original `gptel-agent--grep' function, saved before override.")
-
 (defvar gptel-agent-harness--default-tools
   '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert" "Edit" "Write" "Mkdir" "Bash" "Skill" "Question")
   "Default tool names for `gptel-agent-harness-commands-initialize' and `-review'.")
@@ -68,6 +62,10 @@ PATTERN is a glob pattern to match filenames against.
 PATH is the optional directory to search (defaults to current directory).
 DEPTH limits recursion depth when provided (non-negative integer).
 
+`tree' is only required for the fallback: inside a git repository the
+git strategy never invokes it, so its absence must not fail the tool
+there.
+
 Returns a string listing matching files with full paths.  If the
 output is too large, it is truncated by `gptel-agent--truncate-buffer'."
   (when (string-empty-p pattern)
@@ -76,11 +74,11 @@ output is too large, it is truncated by `gptel-agent--truncate-buffer'."
       (unless (and (file-readable-p path) (file-directory-p path))
         (error "Error: path %s is not readable" path))
     (setq path "."))
-  (unless (executable-find "tree")
-    (error "Error: Executable `tree` not found.  This tool cannot be used"))
   (let* ((full-path (directory-file-name (expand-file-name path)))
          (git-root
           (and (executable-find "git") (locate-dominating-file full-path ".git"))))
+    (unless (or git-root (executable-find "tree"))
+      (error "Error: Executable `tree` not found.  This tool cannot be used"))
     (with-temp-buffer
       (if git-root
           ;; --- Git Strategy ---
@@ -495,16 +493,15 @@ refining the plan."
 
 (defun gptel-agent-harness-tools-enable ()
   "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions.
-Also register additional tools (Question, PlanExit)."
+Also register additional tools (Question, PlanExit).
+
+The overrides are installed as `:override' advice, so no copy of the
+original definition is needed: `advice-remove' in
+`gptel-agent-harness-tools-disable' restores it.  Both calls are
+idempotent — `advice-add' does not install the same function twice."
   (when (fboundp 'gptel-agent--glob)
-    (unless gptel-agent-harness-tools--orig-glob
-      (setq gptel-agent-harness-tools--orig-glob
-            (symbol-function 'gptel-agent--glob)))
     (advice-add 'gptel-agent--glob :override #'gptel-agent-harness-tools--glob))
   (when (fboundp 'gptel-agent--grep)
-    (unless gptel-agent-harness-tools--orig-grep
-      (setq gptel-agent-harness-tools--orig-grep
-            (symbol-function 'gptel-agent--grep)))
     (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep))
   (gptel-agent-harness-tools--register-question)
   (gptel-agent-harness-tools--register-plan-exit))
@@ -512,12 +509,8 @@ Also register additional tools (Question, PlanExit)."
 (defun gptel-agent-harness-tools-disable ()
   "Restore original `gptel-agent--glob' and `gptel-agent--grep'.
 Also unregister additional tools (Question, PlanExit)."
-  (when gptel-agent-harness-tools--orig-glob
-    (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
-    (setq gptel-agent-harness-tools--orig-glob nil))
-  (when gptel-agent-harness-tools--orig-grep
-    (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
-    (setq gptel-agent-harness-tools--orig-grep nil))
+  (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
+  (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
   (gptel-agent-harness-tools--unregister-question)
   (gptel-agent-harness-tools--unregister-plan-exit))
 
