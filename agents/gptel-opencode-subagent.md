@@ -253,7 +253,6 @@ When in doubt, use it.
 - MUST use `Read` tool first if the file already exists (tool will error otherwise)
 - Always prefer editing existing files rather than creating new ones
 - Provide complete file content as a string
-- File path must be absolute, not relative
 - NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
 </tool>
 
