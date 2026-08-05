@@ -248,13 +248,23 @@ auto-discovered custom commands."
       ;; `gptel-agent-harness-mode' is on.  These commands are autoloaded,
       ;; so they can run before that — a missing tool must degrade to a
       ;; smaller tool set, not abort the command.
+      ;;
+      ;; Uses an explicit `condition-case', NOT `with-demoted-errors':
+      ;; the latter expands to `condition-case-unless-debug', which
+      ;; re-signals whenever `debug-on-error' is non-nil.  The degradation
+      ;; would then vanish precisely when someone is debugging — and inside
+      ;; ERT tests on Emacs < 30, whose runner binds `debug-on-error' to t.
       (setq-local gptel-use-tools t)
       (setq-local gptel-tools
                   (delq nil
                         (mapcar
                          (lambda (name)
-                           (with-demoted-errors "gptel-agent-harness: %S"
-                             (gptel-get-tool name)))
+                           (condition-case err
+                               (gptel-get-tool name)
+                             (error
+                              (message "gptel-agent-harness: tool %S unavailable — %s"
+                                       name (error-message-string err))
+                              nil)))
                          gptel-agent-harness--default-tools)))
       (gptel-agent-harness--setup-session)
       (gptel--update-status status 'warning)
