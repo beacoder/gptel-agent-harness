@@ -44,6 +44,7 @@ It adds completion supervision, context management, session persistence, opencod
                '("openai/gpt-oss-120b" . 128000))
   (setq gptel-agent-harness-subagent-model "deepseek-v4-flash")   ; cheap model
   (setq gptel-agent-harness-subagent-backend nil)                 ; inherit backend
+  (setq gptel-agent-harness-safety-bash-timeout 600)              ; extend timeout to 10 minutes
   ;; Optional keybindings
   (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
   (global-set-key (kbd "C-c g m") #'gptel-agent-harness-toggle-mode)
