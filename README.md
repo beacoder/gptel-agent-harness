@@ -17,6 +17,10 @@ It adds completion supervision, context management, session persistence, opencod
 - **Sub-agent model selection** — Enable sub-agents to use a different model than the main agent.
 - **Commands** — Project initialization, code review, conversation summary, manual compaction and user-defined commands.
 
+## Screenshots
+
+![demo.png](demo.png)
+
 ## Installation
 
 ```elisp
