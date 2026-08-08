@@ -6,7 +6,6 @@ DEPS = gptel-agent
 # All harness source files (compile, lint, and checkdoc targets)
 FILES = gptel-agent-harness.el \
 	gptel-agent-harness-agent.el \
-	gptel-agent-harness-cache.el \
 	gptel-agent-harness-commands.el \
 	gptel-agent-harness-safety.el \
 	gptel-agent-harness-session.el \
