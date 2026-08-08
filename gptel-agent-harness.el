@@ -39,7 +39,6 @@
 (require 'gptel-agent-harness-agent)
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)
-(require 'gptel-agent-harness-cache)
 (require 'gptel-agent-harness-safety)
 (require 'gptel-agent-harness-fsm)
 (require 'cl-lib)
@@ -678,7 +677,6 @@ Return non-nil if compaction was initiated, nil otherwise."
                        ;; Success: insert frame + resume requests, then send.
                        (condition-case resume-err
                            (progn
-                             (gptel-agent-harness-cache--reset-epoch)
                              (gptel-agent-harness--insert-compact-frame)
                              (goto-char (point-max))
                              (insert resume-request "\n")
@@ -1215,7 +1213,6 @@ Provides completion and context supervision."
       (progn
         (gptel-agent-harness-tools-enable)
         (gptel-agent-harness-agent-enable)
-        (gptel-agent-harness-cache-enable)
         (gptel-agent-harness-safety-enable)
         (gptel-agent-harness-fsm-enable)
         (advice-add 'gptel--fsm-transition
@@ -1226,7 +1223,6 @@ Provides completion and context supervision."
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
-        (add-hook 'gptel-mode-hook #'gptel-agent-harness-cache--setup)
         ;; Set up for already-open gptel buffers
         (dolist (buf (buffer-list))
           (with-current-buffer buf
@@ -1234,14 +1230,12 @@ Provides completion and context supervision."
               (gptel-agent-harness--setup-mode-line)
               (gptel-agent-harness--setup-calibration)
               (gptel-agent-harness--setup-session)
-              (gptel-agent-harness--setup-plan-cleanup)
-              (gptel-agent-harness-cache--setup))))
+              (gptel-agent-harness--setup-plan-cleanup))))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
     (gptel-agent-harness-agent-disable)
     (gptel-agent-harness-tools-disable)
-    (gptel-agent-harness-cache-disable)
     (gptel-agent-harness-safety-disable)
     (gptel-agent-harness-fsm-disable)
     (advice-remove 'gptel--fsm-transition
@@ -1252,7 +1246,6 @@ Provides completion and context supervision."
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
-    (remove-hook 'gptel-mode-hook #'gptel-agent-harness-cache--setup)
     ;; Clean up from all gptel buffers
     (dolist (buf (buffer-list))
       (with-current-buffer buf
@@ -1261,7 +1254,6 @@ Provides completion and context supervision."
           (gptel-agent-harness--teardown-calibration)
           (gptel-agent-harness--teardown-session)
           (gptel-agent-harness--teardown-plan-cleanup)
-          (gptel-agent-harness-cache--teardown)
           (gptel-agent-harness--cleanup-plan-file)
           (setq gptel-agent-harness--context-ratio nil)
           (setq gptel-agent-harness--token-calibration 1.0)
