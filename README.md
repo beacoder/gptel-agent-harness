@@ -149,8 +149,6 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-commands-load-custom` | (Re)discover custom commands from the custom dir |
 | `gptel-agent-harness-restore-session` | Restore a saved session |
 | `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
-| `gptel-agent-harness-undo-last-edit` | Undo the most recent Edit/Write/Insert |
-| `gptel-agent-harness-undo-history` | Show the edit snapshot stack |
 | `gptel-agent-harness-safety-clear-session` | Reset session Bash allow/deny decisions |
 
 ## Sub-Agent Model/Backend
@@ -250,18 +248,6 @@ When a dangerous command is prompted, `read-multiple-choice` offers:
 Decisions are remembered per session buffer.
 `M-x gptel-agent-harness-safety-clear-session` resets them.
 
-### Edit Undo
-
-Every Edit/Write/Insert tool call snapshots the target file (new files are
-recorded so undo can remove them) before modification.
-`M-x gptel-agent-harness-undo-last-edit` restores the most recent snapshot;
-calling it repeatedly walks back further. If a restore fails the snapshot is
-kept so the call can be retried. `M-x gptel-agent-harness-undo-history` shows
-the snapshot stack.
-
-- `gptel-agent-harness-safety-undo-depth` — Max snapshots kept per session buffer (default: 50).
-- `gptel-agent-harness-safety-backup-dir` — Snapshot storage directory (default: `temporary-file-directory`/`gptel-agent-harness-undo/`).
-
 ### Options
 
 - `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("\\`/mnt/")`, anchored so unrelated paths containing a `mnt` component are not blocked).
@@ -340,7 +326,7 @@ conversation.
 ```
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
-├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval, edit undo
+├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval
 ├── gptel-agent-harness-fsm.el      # FSM hardening advice on upstream gptel
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
 ├── gptel-agent-harness-tools.el    # Enhanced tools + Question/PlanExit tools
