@@ -9,17 +9,12 @@ It adds completion supervision, context management, session persistence, opencod
 - **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts.
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
-- **Tool result caching** — Caches Glob/Grep/Read results with deduplication.
 - **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval that respects `gptel-confirm-tool-calls`.
 - **FSM hardening** — Narrow advice on gptel's state machine so malformed tool calls/results can never wedge a request.
 - **Build/Plan mode** — Per-buffer agent modes (default: build), with a `PlanExit` tool for user-approved switch to build.
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Sub-agent model selection** — Enable sub-agents to use a different model than the main agent.
 - **Commands** — Project initialization, code review, conversation summary, manual compaction and user-defined commands.
-
-## Screenshots
-
-![demo.png](demo.png)
 
 ## Installation
 
@@ -153,8 +148,6 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-undo-last-edit` | Undo the most recent Edit/Write/Insert |
 | `gptel-agent-harness-undo-history` | Show the edit snapshot stack |
 | `gptel-agent-harness-safety-clear-session` | Reset session Bash allow/deny decisions |
-| `gptel-agent-harness-cache-stats` | Show cache hit/miss/dedup counts |
-| `gptel-agent-harness-cache-clear` | Clear the cache for the current buffer |
 
 ## Sub-Agent Model/Backend
 
@@ -201,18 +194,6 @@ An example `explain` command ships in `prompts/commands/explain.txt`.
 - **Grep**: Uses `git grep -e` for safe regex; falls back to `rg` or `grep`.
 - **Question**: LLM asks user via `completing-read` (single/multi-select, free-text). Encourage usage by adding guidance to your system prompt.
 - **PlanExit**: LLM asks the user for approval to leave plan mode. On approval the buffer switches to build mode and the agent starts to execute the approved plan.
-
-## Tool Result Caching
-
-Caches Glob/Grep/Read results per session. Repeated identical calls within the same compaction epoch return a short dedup message instead of full content, saving tokens. Resets on compaction so the LLM gets fresh data in the new context.
-
-Invalidation: file mtime changes, TTL expiry (directories), and write-through on Edit/Write/Insert.
-
-- `gptel-agent-harness-cache-enabled` — Toggle (default: t).
-- `gptel-agent-harness-cache-ttl` — TTL for directory entries in seconds (default: 60).
-- `gptel-agent-harness-cache-max-entries` — Max entries per session (default: 200).
-- `M-x gptel-agent-harness-cache-stats` — Show hit/miss/dedup counts.
-- `M-x gptel-agent-harness-cache-clear` — Clear cache for current buffer.
 
 ## Safety
 
@@ -355,7 +336,6 @@ conversation.
 ```
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
-├── gptel-agent-harness-cache.el    # Tool result caching with deduplication
 ├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval, edit undo
 ├── gptel-agent-harness-fsm.el      # FSM hardening advice on upstream gptel
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
@@ -363,7 +343,7 @@ site-lisp/
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
 ├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT tests: core supervision/context/commands
-├── gptel-agent-harness-extra-test.el # ERT tests: safety, tools, cache
+├── gptel-agent-harness-extra-test.el # ERT tests: safety, tools
 ├── prompts/                        # Prompt templates
 │   └── commands/                   # Auto-discovered custom command prompts
 ├── rules/                          # Agent rules (task-completion-rules.md)
