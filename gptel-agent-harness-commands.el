@@ -30,7 +30,6 @@
 (require 'cl-lib)
 (require 'gptel)
 (require 'gptel-agent)
-(require 'gptel-agent-harness-cache)
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-tools)
 (require 'project)
@@ -187,7 +186,6 @@ without waiting for the automatic trigger."
                (message "Manual compaction failed: %s"
                         (plist-get info :error))
              ;; Success: add header + separator.
-             (gptel-agent-harness-cache--reset-epoch)
              (gptel-agent-harness--insert-compact-frame)
              (message "Buffer compacted successfully."))))))))
 
