@@ -47,10 +47,6 @@
 ;;   buffer (`allow'/`deny') so a decision is not asked twice;
 ;;   `gptel-agent-harness-safety-clear-session' resets that state.
 ;;
-;; - Edit undo: every Edit/Write/Insert tool call snapshots the target
-;;   file before modification.  `gptel-agent-harness-undo-last-edit'
-;;   restores the most recent snapshot (per session buffer).
-;;
 ;; Activated/deactivated by `gptel-agent-harness-mode' in
 ;; gptel-agent-harness.el.  No separate mode is needed.
 ;;
@@ -199,23 +195,7 @@ Read/Glob/Grep tools to inspect instead."
   :type '(repeat string)
   :group 'gptel-agent-harness)
 
-(defcustom gptel-agent-harness-safety-undo-depth 50
-  "Maximum number of file snapshots kept per session buffer."
-  :type 'integer
-  :group 'gptel-agent-harness)
-
-(defcustom gptel-agent-harness-safety-backup-dir
-  (expand-file-name "gptel-agent-harness-undo/" temporary-file-directory)
-  "Directory where file snapshots for undo are stored."
-  :type 'directory
-  :group 'gptel-agent-harness)
-
 ;;;; Internal State
-
-(defvar-local gptel-agent-harness-safety--undo-stack nil
-  "Buffer-local undo stack of file snapshots.
-Each entry is a plist:
-  (:path STRING :backup STRING-OR-NIL :existed BOOL :tool STRING :time FLOAT)")
 
 (defvar-local gptel-agent-harness-safety--session-allow nil
   "Bash commands the user allowed for this session buffer.
@@ -317,7 +297,6 @@ before applying the change.  Also refuses edits while plan mode is
 active, except for the plan file itself."
   (gptel-agent-harness-safety--check-path path "Edit")
   (gptel-agent-harness-safety--check-read-only path "Edit")
-  (gptel-agent-harness-safety--snapshot-file path "Edit")
   (funcall orig-fn path old-str new-str-or-diff diffp))
 
 (defun gptel-agent-harness-safety--insert-guard (orig-fn path line-number new-str)
@@ -327,7 +306,6 @@ Also refuses inserts while plan mode is active, except for the plan
 file itself."
   (gptel-agent-harness-safety--check-path path "Insert")
   (gptel-agent-harness-safety--check-read-only path "Insert")
-  (gptel-agent-harness-safety--snapshot-file path "Insert")
   (funcall orig-fn path line-number new-str))
 
 (defun gptel-agent-harness-safety--write-guard (orig-fn path filename content)
@@ -338,8 +316,6 @@ itself."
   (let ((full-path (expand-file-name filename path)))
     (gptel-agent-harness-safety--check-path full-path "Write")
     (gptel-agent-harness-safety--check-read-only full-path "Write")
-    (gptel-agent-harness-safety--snapshot-file full-path "Write")
-    (gptel-agent-harness-safety--record-absent full-path "Write")
     (funcall orig-fn path filename content)))
 
 ;;;; Bash Timeout
@@ -683,135 +659,11 @@ leading `ls'."
               (cl-every #'gptel-agent-harness-safety--bash-segment-read-only-p
                         segments)))))
 
-;;;; Edit Undo
-
-(defun gptel-agent-harness-safety--ensure-backup-dir ()
-  "Create `gptel-agent-harness-safety-backup-dir' if needed."
-  (unless (file-directory-p gptel-agent-harness-safety-backup-dir)
-    (make-directory gptel-agent-harness-safety-backup-dir t)))
-
-(defun gptel-agent-harness-safety--snapshot-file (path tool-name)
-  "Snapshot the file at PATH before TOOL-NAME modifies it.
-Pushes a plist onto the buffer-local undo stack.  Files that do not
-exist yet are recorded as :existed nil so undo can delete them."
-  (when (and (stringp path) (file-regular-p path))
-    (gptel-agent-harness-safety--ensure-backup-dir)
-    (let* ((backup (expand-file-name
-                    (make-temp-name
-                     (format "snap-%s-" (file-name-nondirectory path)))
-                    gptel-agent-harness-safety-backup-dir))
-           (entry (list :path (expand-file-name path)
-                        :backup backup
-                        :existed t
-                        :tool tool-name
-                        :time (float-time))))
-      (condition-case nil
-          (copy-file path backup t 'preserve-permissions)
-        (error nil))
-      (push entry gptel-agent-harness-safety--undo-stack)
-      (when (> (length gptel-agent-harness-safety--undo-stack)
-               gptel-agent-harness-safety-undo-depth)
-        ;; Drop the OLDEST entry (tail) and its backup file.
-        (let ((old (car (last gptel-agent-harness-safety--undo-stack))))
-          (setq gptel-agent-harness-safety--undo-stack
-                (butlast gptel-agent-harness-safety--undo-stack))
-          (when-let* ((b (plist-get old :backup)))
-            (ignore-errors (delete-file b)))))
-      (when gptel-agent-harness-verbose
-        (message "gptel-agent-harness-safety: snapshot %s (%s)"
-                 (abbreviate-file-name (expand-file-name path)) tool-name)))))
-
-(defun gptel-agent-harness-safety--record-absent (path tool-name)
-  "Record PATH (which does not exist yet) on the undo stack.
-Lets `gptel-agent-harness-undo-last-edit' remove files created by a
-Write tool call.  TOOL-NAME is recorded for the undo history."
-  (when (and (stringp path)
-             (not (file-exists-p path))
-             (not (file-directory-p path)))
-    (push (list :path (expand-file-name path)
-                :backup nil
-                :existed nil
-                :tool tool-name
-                :time (float-time))
-          gptel-agent-harness-safety--undo-stack)
-    (when (> (length gptel-agent-harness-safety--undo-stack)
-             gptel-agent-harness-safety-undo-depth)
-      (setq gptel-agent-harness-safety--undo-stack
-            (butlast gptel-agent-harness-safety--undo-stack)))))
-
-;;;###autoload
-(defun gptel-agent-harness-undo-last-edit ()
-  "Restore the most recent file snapshot taken before an Edit/Write/Insert.
-Works per gptel session buffer.  A second call restores the next-older
-snapshot, and so on.  If a restore fails the snapshot is kept on the
-stack so the call can be retried."
-  (interactive)
-  (if (null gptel-agent-harness-safety--undo-stack)
-      (message "gptel-agent-harness-safety: nothing to undo")
-    (let* ((entry (car gptel-agent-harness-safety--undo-stack))
-           (path (plist-get entry :path))
-           (backup (plist-get entry :backup))
-           (existed (plist-get entry :existed))
-           (tool (plist-get entry :tool))
-           (drop (lambda ()
-                   (pop gptel-agent-harness-safety--undo-stack)
-                   (when backup (ignore-errors (delete-file backup))))))
-      (cond
-       ((and existed backup (file-exists-p backup))
-        (condition-case err
-            (progn
-              (copy-file backup path t 'preserve-permissions)
-              (funcall drop)
-              (message "gptel-agent-harness-safety: restored %s (undo %s)"
-                       (abbreviate-file-name path) tool))
-          (error
-           (message "gptel-agent-harness-safety: restore failed — %s"
-                    (error-message-string err)))))
-       ((not existed)
-        (condition-case err
-            (progn
-              (when (file-exists-p path) (delete-file path))
-              (funcall drop)
-              (message "gptel-agent-harness-safety: removed %s (created by %s)"
-                       (abbreviate-file-name path) tool))
-          (error
-           (message "gptel-agent-harness-safety: removal failed — %s"
-                    (error-message-string err)))))
-       (t
-        ;; Backup file is gone — entry can never be restored, drop it.
-        (pop gptel-agent-harness-safety--undo-stack)
-        (message "gptel-agent-harness-safety: backup for %s missing, cannot restore"
-                 (abbreviate-file-name path)))))))
-
-;;;###autoload
-(defun gptel-agent-harness-undo-history ()
-  "Show the file snapshot history for the current session buffer."
-  (interactive)
-  (if (null gptel-agent-harness-safety--undo-stack)
-      (message "gptel-agent-harness-safety: no snapshots recorded")
-    (let ((lines
-           (mapcar
-            (lambda (entry)
-              (format "%s  %-6s  %s"
-                      (format-time-string "%H:%M:%S" (plist-get entry :time))
-                      (plist-get entry :tool)
-                      (abbreviate-file-name (plist-get entry :path))))
-            (reverse gptel-agent-harness-safety--undo-stack))))
-      (message "gptel-agent-harness-safety: %d snapshot(s):\n%s"
-               (length lines) (mapconcat #'identity lines "\n")))))
-
-(defun gptel-agent-harness-safety--cleanup-backups ()
-  "Delete all backup files referenced by the current buffer's undo stack."
-  (dolist (entry gptel-agent-harness-safety--undo-stack)
-    (when-let* ((backup (plist-get entry :backup)))
-      (ignore-errors (delete-file backup))))
-  (setq gptel-agent-harness-safety--undo-stack nil))
-
 ;;;; Enable / Disable
 
 (defun gptel-agent-harness-safety-enable ()
   "Activate the safety layer.
-Installs path guards, Bash timeout/approval, and edit snapshots.
+Installs path guards and Bash timeout/approval.
 Advice is added with depth -100, placing it outermost of all tool
 advice, so forbidden paths are rejected before any other layer runs."
   ;; Path guards (outermost of all :around advice)
