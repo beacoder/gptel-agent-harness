@@ -29,9 +29,8 @@
 ;; ERT tests for the gptel-agent-harness core: completion supervision,
 ;; context management, compaction, session persistence, and commands.
 ;;
-;; Tool-layer tests (enhanced glob/grep/Question tools, result cache)
-;; and module tests (safety, tools, cache) live in
-;; gptel-agent-harness-extra-test.el.
+;; Tool-layer tests (enhanced glob/grep/Question tools) and module
+;; tests (safety, tools) live in gptel-agent-harness-extra-test.el.
 ;;
 ;; Run with:
 ;;   Emacs --batch -L /path/to/gptel \
