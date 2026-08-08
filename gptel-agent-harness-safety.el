@@ -812,9 +812,8 @@ stack so the call can be retried."
 (defun gptel-agent-harness-safety-enable ()
   "Activate the safety layer.
 Installs path guards, Bash timeout/approval, and edit snapshots.
-Advice is added with depth -100, which places it OUTERMOST — a negative
-depth runs earlier than the caching layer at depth -90, so forbidden
-paths are rejected before the cache can answer from a previous result."
+Advice is added with depth -100, placing it outermost of all tool
+advice, so forbidden paths are rejected before any other layer runs."
   ;; Path guards (outermost of all :around advice)
   (advice-add 'gptel-agent--read-file-lines
               :around #'gptel-agent-harness-safety--read-guard '((depth . -100)))
