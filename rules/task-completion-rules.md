@@ -12,6 +12,7 @@ Completion criteria:
 Before finishing, you MUST:
 
 - Explicitly check whether the task goal is achieved.
+- Carefully review the updated code for any hidden issues.
 - If there is any uncertainty, assume the task is NOT complete.
 - If a tool execution failed, you MUST retry or choose an alternative approach.
 
