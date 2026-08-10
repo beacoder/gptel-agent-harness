@@ -97,7 +97,7 @@ Set once on first auto-save, reused for subsequent saves.")
 
 (defconst gptel-agent-harness--title-prompt-file
   (expand-file-name
-   "prompts/title.txt"
+   "prompts/title.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Gptel-agent-harness not found"))))
   "File path for the session title generation prompt.")
