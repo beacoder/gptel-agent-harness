@@ -173,9 +173,12 @@ top-level-p) see them."
 
 ;; Declared special so `let' bindings are dynamic (completion frameworks
 ;; check these with `bound-and-true-p'; see
-;; `gptel-agent-harness--preview-candidate-at-point').
-(defvar vertico--index nil)
-(defvar vertico--candidates nil)
+;; `gptel-agent-harness--preview-candidate-at-point').  The `boundp'
+;; guard (same pattern as the gptel stubs in
+;; gptel-agent-harness-extra-test.el) keeps package-lint from flagging
+;; the unprefixed vertico internals.
+(unless (boundp 'vertico--index) (defvar vertico--index nil))
+(unless (boundp 'vertico--candidates) (defvar vertico--candidates nil))
 
 ;;;; Token Estimation Tests
 
