@@ -171,6 +171,12 @@ top-level-p) see them."
     (when proj-dir
       (setq-local gptel-agent-harness--project-dir proj-dir))))
 
+;; Declared special so `let' bindings are dynamic (completion frameworks
+;; check these with `bound-and-true-p'; see
+;; `gptel-agent-harness--preview-candidate-at-point').
+(defvar vertico--index nil)
+(defvar vertico--candidates nil)
+
 ;;;; Token Estimation Tests
 
 (ert-deftest gptel-agent-harness-test-cjk-char-p ()
@@ -180,6 +186,23 @@ top-level-p) see them."
   (should (gptel-agent-harness--cjk-char-p ?Ａ))
   (should-not (gptel-agent-harness--cjk-char-p ?A))
   (should-not (gptel-agent-harness--cjk-char-p ?é)))
+
+(ert-deftest gptel-agent-harness-test-cjk-char-p-ranges ()
+  "Test CJK detection across all covered code ranges."
+  ;; CJK compat ideographs
+  (should (gptel-agent-harness--cjk-char-p #xf900))
+  (should (gptel-agent-harness--cjk-char-p #xfaff))
+  ;; Full-width forms
+  (should (gptel-agent-harness--cjk-char-p #xff00))
+  (should (gptel-agent-harness--cjk-char-p #xffef))
+  ;; CJK extensions B–F boundaries
+  (should (gptel-agent-harness--cjk-char-p #x20000))
+  (should (gptel-agent-harness--cjk-char-p #x2fa1f))
+  ;; Outside every range
+  (should-not (gptel-agent-harness--cjk-char-p #x10000))
+  (should-not (gptel-agent-harness--cjk-char-p #x2fa20))
+  (should-not (gptel-agent-harness--cjk-char-p #x2fff))
+  (should-not (gptel-agent-harness--cjk-char-p 0)))
 
 (ert-deftest gptel-agent-harness-test-estimate-tokens ()
   "Test token estimation for mixed content."
@@ -1588,7 +1611,9 @@ Verifies plain strings, multimodal vector/list content, and Gemini
   (let ((data (list :messages (list (list :role "user" :content "hi")))))
     (should (= 0 (gptel-agent-harness--request-injection-position data))))
   (let ((data (list :messages (vector "raw" 42))))
-    (should (= 2 (gptel-agent-harness--request-injection-position data)))))
+    (should (= 2 (gptel-agent-harness--request-injection-position data))))
+  (let ((data (list :foo 1)))
+    (should (= 0 (gptel-agent-harness--request-injection-position data)))))
 
 (ert-deftest gptel-agent-harness-test-extract-content-malformed ()
   "Content extractors never signal on malformed parts."
@@ -2560,6 +2585,464 @@ all saved state."
   (gptel-agent-harness--dismiss-preview)
   (should-not (get-buffer "*gptel-session-preview*")))
 
+;;;; Coverage Completion — remaining branches
+
+(ert-deftest gptel-agent-harness-test-restore-session-short-title ()
+  "Restore keeps a short title as the buffer name without truncation."  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-session-dir temp-dir)
+          (session-file (expand-file-name
+                         "Fix-auth-bug_260723100000.md" temp-dir)))
+      (with-temp-file session-file
+        (insert "content\n")
+        (insert "\n" gptel-agent-harness-test--lv-header "\n")
+        (insert ";; End:\n"))
+      (cl-letf (((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-mode)
+                 (lambda (&optional arg)
+                   (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name) (list :name name :function #'ignore)))
+                ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
+        (gptel-agent-harness-restore-session session-file)
+        (should (equal (buffer-name) "*Fix auth bug*"))
+        (should (equal gptel-agent-harness--session-title "Fix auth bug"))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest gptel-agent-harness-test-restore-latest-session-missing-dir ()
+  "`restore-latest-session' reports a missing session directory."
+  (let ((gptel-agent-harness-session-dir "/nonexistent/gptel-sessions-xyz"))
+    (should (string-match-p "does not exist"
+                            (gptel-agent-harness-restore-latest-session)))))
+
+(ert-deftest gptel-agent-harness-test-load-custom-interactive ()
+  "`load-custom' reports defined commands when called interactively."
+  (gptel-agent-harness-test--with-temp-dir dir
+    (with-temp-file (expand-file-name "tfoo.md" dir)
+      (insert "Foo ${path}."))
+    (let ((gptel-agent-harness-commands--custom-commands nil)
+          (message-text nil))
+      (cl-letf (((symbol-function 'called-interactively-p)
+                 (lambda (&rest _) t))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq message-text (apply #'format fmt args)))))
+        (let ((defined (gptel-agent-harness-commands-load-custom dir)))
+          (should (= 1 (length defined)))
+          (should (string-match-p "Defined 1 custom command"
+                                  message-text)))
+        (fmakunbound 'gptel-agent-harness-commands-tfoo)))))
+
+(ert-deftest gptel-agent-harness-test-plan-temp-dir-remote ()
+  "`--plan-temp-dir' uses the remote temp directory for Tramp paths."
+  (let ((default-directory "/ssh:host:/path/"))
+    (cl-letf (((symbol-function 'temporary-file-directory)
+               (lambda () "/remote/tmp/")))
+      (should (equal (gptel-agent-harness--plan-temp-dir)
+                     "/remote/tmp/")))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-compaction-error-verbose ()
+  "`--handle-wait-state' logs the compaction error when verbose."
+  (let ((gptel-agent-harness-verbose t)
+        (gptel-model "unknown-model")
+        (messages nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq gptel-agent-harness--compacting-p nil))
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools (vector (list :type "function"))
+                    :system (make-string 100000 ?x)
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-called nil)
+             (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (fmt &rest args)
+                     (push (apply #'format fmt args) messages)))
+                  ((symbol-function 'gptel-agent-harness--compact)
+                   (lambda (&rest _) (error "Boom"))))
+          (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
+          (should (eq orig-called 'WAIT))
+          (should (string-match-p "compaction error"
+                                  (mapconcat #'identity messages "\n"))))))))
+
+;;;; Token-estimation / extractor / FSM-branch edge cases
+
+(ert-deftest gptel-agent-harness-test-extract-system-content-forms ()
+  "`--extract-system-content' handles vector and list system prompts.
+Also renders malformed parts defensively without signalling."
+  (with-temp-buffer
+    (gptel-agent-harness--extract-system-content
+     [( :type "text" :text "vec part one") (:type "text" :text "vec part two")])
+    (should (string-match-p "vec part one" (buffer-string)))
+    (should (string-match-p "vec part two" (buffer-string))))
+  (with-temp-buffer
+    (gptel-agent-harness--extract-system-content
+     (list "list string" (list :text "list part")))
+    (should (string-match-p "list string" (buffer-string)))
+    (should (string-match-p "list part" (buffer-string))))
+  ;; Malformed system never signals.
+  (with-temp-buffer
+    (gptel-agent-harness--extract-system-content
+     (list :parts (vector 42 "str")))
+    (should (string-match-p "42" (buffer-string))))
+  (with-temp-buffer
+    (gptel-agent-harness--extract-system-content 42)
+    (should (string-empty-p (buffer-string)))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-verbose-debug-buffer ()
+  "Verbose mode logs the token estimation to the debug buffer."
+  (let ((gptel-agent-harness-verbose t))
+    (gptel-agent-harness-test--with-buffer buf
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :system "sys"
+                   :tools (vector (list :type "function" :function (list :name "t")))
+                   :messages (vector (list :role "user" :content "hello")))))
+        (unwind-protect
+            (progn
+              (should (> (gptel-agent-harness--context-tokens-from-data fsm) 0))
+              (let ((dbg (get-buffer "*gptel-agent-harness-debug*")))
+                (should dbg)
+                (with-current-buffer dbg
+                  (should (string-match-p "Context Token Estimation" (buffer-string)))
+                  (should (string-match-p "Total estimated tokens" (buffer-string)))
+                  (should (string-match-p "\\[system\\]" (buffer-string)))
+                  (should (string-match-p "\\[user\\]" (buffer-string)))
+                  (should (string-match-p "tools" (buffer-string)))))
+          (kill-buffer "*gptel-agent-harness-debug*")))))))
+
+(ert-deftest gptel-agent-harness-test-context-ratio-calibration-fallback ()
+  "`--context-ratio-for-fsm' falls back to calibration 1.0 when the buffer is gone."
+  (let ((gptel-agent-harness-verbose nil)
+        (gptel-model "unknown-model"))
+    (let* ((buf (generate-new-buffer " *dead-ratio*"))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :system "sys"
+                  :messages (vector (list :role "user" :content "hi")))))
+      (kill-buffer buf)
+      (should (> (gptel-agent-harness--context-ratio-for-fsm fsm) 0)))))
+
+(ert-deftest gptel-agent-harness-test-get-nudges-fallback ()
+  "`--get-nudges' returns 0 when the FSM buffer is gone."
+  (let* ((buf (generate-new-buffer " *dead-nudge*"))
+         (fsm (gptel-agent-harness-test--make-fsm buf :system "sys")))
+    (kill-buffer buf)
+    (should (= (gptel-agent-harness--get-nudges fsm) 0))))
+
+(ert-deftest gptel-agent-harness-test-plan-temp-dir-fallback ()
+  "`--plan-temp-dir' falls back to /tmp when every candidate is mounted."
+  (let ((mounted-file-systems "\\(?:/tmp/\\|/var/tmp/\\)")
+        (default-directory "/tmp/"))
+    (cl-letf (((default-value 'temporary-file-directory) "/tmp/")
+              ((symbol-function 'getenv) (lambda (&rest _) nil)))
+      (should (equal (gptel-agent-harness--plan-temp-dir) "/tmp/")))))
+
+(ert-deftest gptel-agent-harness-test-plan-file-path-project-fallback ()
+  "`--plan-file-path' falls back to `default-directory' without a project dir."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-agent-harness--plan-file nil)
+      (setq-local gptel-agent-harness--project-dir nil)
+      (let ((default-directory "/tmp/projfallback/"))
+        (let ((path (gptel-agent-harness--plan-file-path)))
+          (should (string-match-p "projfallback" path))
+          (should (string-suffix-p "PLAN.md" path)))))))
+
+(ert-deftest gptel-agent-harness-test-set-mode-verbose-message ()
+  "`set-mode' logs a message when `gptel-agent-harness-verbose' is set."
+  (let ((gptel-agent-harness-verbose t)
+        (messages nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'message)
+                   (lambda (fmt &rest args)
+                     (push (apply #'format fmt args) messages))))
+          (gptel-agent-harness-set-mode 'build)
+          (should (string-match-p "switched to build mode" (car messages))))))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-compaction-started ()
+  "When compaction starts, `--handle-wait-state' skips the real transition."
+  (let ((gptel-model "unknown-model"))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq gptel-agent-harness--compacting-p nil))
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools (vector (list :type "function"))
+                    :system (make-string 100000 ?x)
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-called nil)
+             (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+        (cl-letf (((symbol-function 'gptel-agent-harness--compact)
+                   (lambda (&rest _) t)))
+          (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
+          (should-not orig-called))))))
+
+(ert-deftest gptel-agent-harness-test-wait-state-context-ratio-error ()
+  "`--handle-wait-state' survives errors in context-ratio computation."
+  (let ((gptel-agent-harness-verbose t))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq gptel-agent-harness--context-ratio nil))
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools (vector (list :type "function"))
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-called nil)
+             (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+        (cl-letf (((symbol-function 'gptel-agent-harness--update-context-ratio)
+                   (lambda (&rest _) (error "Boom"))))
+          (gptel-agent-harness--handle-wait-state orig-fn fsm 'WAIT)
+          (should (eq orig-called 'WAIT)))))))
+
+(ert-deftest gptel-agent-harness-test-terminal-state-nudge-throw-verbose ()
+  "A throwing nudge with verbose on logs and falls back to the original state."
+  (let ((gptel-agent-harness-verbose t))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq gptel-agent-harness--compacting-p nil)
+        (setq gptel-agent-harness--nudge-count 0))
+      (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools (vector (list :type "function"))
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-called nil)
+             (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
+        (cl-letf (((symbol-function 'gptel-agent-harness--nudge)
+                   (lambda (&rest _) (error "Boom"))))
+          (gptel-agent-harness--handle-terminal-state orig-fn fsm 'DONE)
+          (should (eq orig-called 'DONE)))))))
+
+(ert-deftest gptel-agent-harness-test-transition-advice-nil-state ()
+  "`--transition-advice' resolves the next state via `gptel--fsm-next' when nil."
+  (gptel-agent-harness-test--with-buffer buf
+    (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :system "sys"
+                  :messages (vector)))
+           (calls 0))
+      (cl-letf (((symbol-function 'gptel--fsm-next) (lambda (_m) 'TYPE)))
+        (let ((orig-fn (lambda (&optional _m _ns) (cl-incf calls))))
+          (gptel-agent-harness--transition-advice orig-fn fsm)
+          (should (= calls 1)))))))
+
+(ert-deftest gptel-agent-harness-test-teardown-mode-line-misc-info-path ()
+  "`--teardown-mode-line' cleans the construct from `mode-line-misc-info'."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local mode-line-misc-info
+                  (append '(gptel-agent-harness--mode-line-construct)
+                          (default-value 'mode-line-misc-info)))
+      (setq-local mode-line-format (default-value 'mode-line-format))
+      (setq-local which-func-mode t)
+      (gptel-agent-harness--teardown-mode-line)
+      (should-not (memq 'gptel-agent-harness--mode-line-construct
+                        mode-line-misc-info))
+      (should-not (local-variable-p 'mode-line-misc-info))
+      (should-not (local-variable-p 'mode-line-format))
+      (should-not (local-variable-p 'which-func-mode)))))
+
+(ert-deftest gptel-agent-harness-test-read-title-prompt ()
+  "`--read-title-prompt' reads the file and errors when missing."
+  (let ((temp-file (make-temp-file "title-" nil ".txt" "title prompt")))
+    (let ((gptel-agent-harness--title-prompt-file temp-file))
+      (should (equal (gptel-agent-harness--read-title-prompt) "title prompt")))
+    (delete-file temp-file))
+  (let ((gptel-agent-harness--title-prompt-file "/nonexistent/title.md"))
+    (should-error (gptel-agent-harness--read-title-prompt))))
+
+(ert-deftest gptel-agent-harness-test-agent-register-preset ()
+  "`--register-preset' registers presets for defined agents, once."
+  (let ((gptel-agent-harness-agent--defined-agents
+         '((my-agent-test . "my-agent-test")))
+        (gptel-agent--agents (list (cons "my-agent-test"
+                                         (list :model "test-model"))))
+        (gptel--known-presets nil))
+    (gptel-agent-harness-agent--register-preset)
+    (should (assoc 'my-agent-test gptel--known-presets))
+    (let ((n (length gptel--known-presets)))
+      ;; Second call is a no-op.
+      (gptel-agent-harness-agent--register-preset)
+      (should (= (length gptel--known-presets) n)))))
+
+(ert-deftest gptel-agent-harness-test-agent-apply-preset-buffer-local ()
+  "`--apply-preset-buffer-local' applies a preset and manages confirm-tool-calls."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      ;; Symbol preset without :confirm-tool-calls → binding restored to global.
+      (setq-local gptel-confirm-tool-calls t)
+      (cl-letf (((symbol-function 'gptel-get-preset)
+                 (lambda (_name) (list :model "m"))))
+        (gptel-agent-harness-agent--apply-preset-buffer-local 'some-preset))
+      (should-not (local-variable-p 'gptel-confirm-tool-calls))
+      ;; Preset specifying :confirm-tool-calls keeps the buffer-local binding.
+      (setq-local gptel-confirm-tool-calls nil)
+      (cl-letf (((symbol-function 'gptel-get-preset)
+                 (lambda (_name) (list :confirm-tool-calls t))))
+        (gptel-agent-harness-agent--apply-preset-buffer-local 'some-preset))
+      (should (local-variable-p 'gptel-confirm-tool-calls))
+      ;; A raw plist preset is applied directly.
+      (setq-local gptel-confirm-tool-calls t)
+      (gptel-agent-harness-agent--apply-preset-buffer-local
+       (list :model "direct"))
+      (should-not (local-variable-p 'gptel-confirm-tool-calls)))))
+
+(ert-deftest gptel-agent-harness-test-opencode-agent-function ()
+  "`gptel-opencode-agent' spawns a gptel buffer with agent update."
+  (gptel-agent-harness-test--with-temp-dir dir
+    (let ((gptel-use-tools nil)
+          (gptel-tools nil)
+          (created nil)
+          (updated nil))
+      (cl-letf (((symbol-function 'gptel)
+                 (lambda (buf-name &rest _)
+                   (setq created buf-name)
+                   (get-buffer-create buf-name)))
+                ((symbol-function 'gptel-agent-update)
+                 (lambda () (setq updated t)))
+                ((symbol-function 'gptel-agent-harness-agent--apply-preset-buffer-local)
+                 #'ignore))
+        (gptel-opencode-agent dir)
+        (should updated)
+        (should (string-match-p "\\*gptel-opencode-agent:" created))
+        (let ((buf (get-buffer created)))
+          (should (buffer-live-p buf))
+          (kill-buffer buf))))))
+
+(ert-deftest gptel-agent-harness-test-preview-candidate-at-point ()
+  "`--preview-candidate-at-point' previews the current file candidate."
+  (let ((gptel-agent-harness--preview-candidate nil))
+    (gptel-agent-harness-test--with-temp-dir dir
+      (let ((session-file (expand-file-name "test_260723100000.md" dir)))
+        (with-temp-file session-file (insert "content"))
+        (unwind-protect
+            (progn
+              ;; vertico path (dynamic binding via defvar'd special vars)
+              (let ((vertico--index 0)
+                    (vertico--candidates (list session-file)))
+                (gptel-agent-harness--preview-candidate-at-point)
+                (should (get-buffer "*gptel-session-preview*"))
+                (gptel-agent-harness--dismiss-preview))
+              ;; minibuffer content path (reset the remembered candidate)
+              (setq gptel-agent-harness--preview-candidate nil)
+              (cl-letf (((symbol-function 'minibuffer-contents)
+                         (lambda () session-file)))
+                (gptel-agent-harness--preview-candidate-at-point)
+                (should (get-buffer "*gptel-session-preview*"))
+                (gptel-agent-harness--dismiss-preview))
+              ;; non-file candidate → no preview, no error
+              (let ((vertico--index 0)
+                    (vertico--candidates (list "/nonexistent/foo.md")))
+                (gptel-agent-harness--preview-candidate-at-point)
+                (should-not (get-buffer "*gptel-session-preview*")))
+              ;; non-string candidate errors inside and is swallowed
+              (let ((vertico--index 0)
+                    (vertico--candidates (list 42)))
+                (gptel-agent-harness--preview-candidate-at-point))
+              ;; no candidates at all → no error
+              (let ((vertico--index nil))
+                (gptel-agent-harness--preview-candidate-at-point)))
+          (gptel-agent-harness--dismiss-preview))))))
+
+(ert-deftest gptel-agent-harness-test-setup-preview-hook ()
+  "`--setup-preview-hook' installs a local `post-command-hook'."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness--setup-preview-hook)
+      (should (memq #'gptel-agent-harness--preview-candidate-at-point
+                    post-command-hook)))))
+
+(ert-deftest gptel-agent-harness-test-read-session-file ()
+  "`--read-session-file' returns the selected file and dismisses the preview."
+  (cl-letf (((symbol-function 'read-file-name)
+             (lambda (&rest _) "/tmp/selected-session.md")))
+    (gptel-agent-harness-test--with-temp-dir dir
+      (let ((gptel-agent-harness-session-dir dir))
+        (should (equal (gptel-agent-harness--read-session-file)
+                       "/tmp/selected-session.md"))
+        (should-not (get-buffer "*gptel-session-preview*"))))))
+
+(ert-deftest gptel-agent-harness-test-commands-compact-sends-request ()
+  "`commands-compact' sends buffer content with the compact prompt."
+  (let ((prompt-file (make-temp-file "compact-" nil ".txt" "compact instructions"))
+        (gptel-agent-harness-compact-prompt-file nil)
+        (captured-content nil)
+        (captured-system nil)
+        (post-fn-called nil))
+    (unwind-protect
+        (progn
+          (setq gptel-agent-harness-compact-prompt-file prompt-file)
+          (cl-letf (((symbol-function 'gptel-request)
+                     (lambda (content &rest args)
+                       (setq captured-content content)
+                       (setq captured-system (plist-get args :system))
+                       (gptel-make-fsm :info (list :buffer (current-buffer)))))
+                    ((symbol-function 'gptel--update-status)
+                     (lambda (&rest _) nil)))
+            (with-temp-buffer
+              (setq-local gptel-mode t)
+              (insert "buffer content to compact")
+              (let ((fsm (gptel-agent-harness-commands-compact
+                          (lambda (&optional _info) (setq post-fn-called t)))))
+                (should (equal captured-content "buffer content to compact"))
+                (should (equal captured-system "compact instructions"))
+                ;; The post-func is stored in the FSM info and run by the
+                ;; callback machinery once compaction completes.
+                (gptel-agent-harness-commands--run-post-funcs
+                 (gptel-fsm-info fsm))
+                (should post-fn-called)))
+            ;; A buffer-local compact prompt wins over the file.
+            (setq captured-system nil)
+            (with-temp-buffer
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-compact-prompt "local prompt")
+              (gptel-agent-harness-commands-compact)
+              (should (equal captured-system "local prompt")))))
+      (delete-file prompt-file))))
+
+(ert-deftest gptel-agent-harness-test-restore-session-long-title ()
+  "Restore truncates long titles in the buffer name and keeps the cache."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-session-dir temp-dir)
+          (session-file (expand-file-name
+                         "This-is-a-very-long-session-title_260723100000.md"
+                         temp-dir)))
+      (with-temp-file session-file
+        (insert "content\n")
+        (insert "\n" gptel-agent-harness-test--lv-header "\n")
+        (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
+        (insert ";; End:\n"))
+      (cl-letf (((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-mode)
+                 (lambda (&optional arg)
+                   (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name) (list :name name :function #'ignore)))
+                ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
+        (let ((gptel--preset 'some-preset))
+          (gptel-agent-harness-restore-session session-file))
+        (should (string-match-p "…" (buffer-name)))
+        (should (equal gptel-agent-harness--session-title
+                       "This is a very long session title"))
+        (should (equal gptel-agent-harness--session-file-cache session-file))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest gptel-agent-harness-test-custom-explain-command ()
+  "The load-time `explain' custom command spawns a buffer."
+  (gptel-agent-harness-test--with-temp-dir dir
+    (cl-letf (((symbol-function 'gptel-get-tool)
+               (lambda (name) (intern (format "tool-%s" name))))
+              ((symbol-function 'gptel-agent-update) #'ignore)
+              ((symbol-function 'gptel-send) #'ignore)
+              ((symbol-function 'gptel--update-status) (lambda (&rest _) nil))
+              ((symbol-function 'gptel)
+               (lambda (buf-name &optional _p _i _int)
+                 (get-buffer-create buf-name)))
+              ((symbol-function 'project-current) (lambda () nil)))
+      (let ((buf (gptel-agent-harness-commands-explain "why")))
+        (should (buffer-live-p buf))
+        (with-current-buffer buf
+          (should (string-match-p "senior engineer" gptel-system-prompt)))
+        (kill-buffer buf)))))
 (provide 'gptel-agent-harness-test)
 
 ;; No `package-lint-main-file' here on purpose: this file IS the main file
