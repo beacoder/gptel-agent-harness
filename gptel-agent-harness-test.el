@@ -30,7 +30,7 @@
 ;; context management, compaction, session persistence, and commands.
 ;;
 ;; Tool-layer tests (enhanced glob/grep/Question tools) and module
-;; tests (safety, tools) live in gptel-agent-harness-extra-test.el.
+;; tests (tools) live in gptel-agent-harness-extra-test.el.
 ;;
 ;; Run with:
 ;;   Emacs --batch -L /path/to/gptel \
@@ -1134,7 +1134,7 @@ message list to inject, and POSITION is the insertion index."
         ;; Default is build mode with an empty queue.
         (should (eq gptel-agent-harness--mode 'build))
         (should (null gptel-agent-harness--pending-prompts))
-        ;; Switch to plan → plan.txt + plan-mode.txt queued.
+        ;; Switch to plan → plan.md + plan-mode.md queued.
         (gptel-agent-harness-toggle-mode)
         (should (eq gptel-agent-harness--mode 'plan))
         (should (= 2 (length gptel-agent-harness--pending-prompts)))
@@ -1153,7 +1153,7 @@ message list to inject, and POSITION is the insertion index."
                                   (nth 1 gptel-agent-harness--pending-prompts)))
           (should-not (string-match-p "\\${planInfo}"
                                       (nth 1 gptel-agent-harness--pending-prompts))))
-        ;; Switch back to build → only build-switch.txt queued.
+        ;; Switch back to build → only build-switch.md queued.
         (gptel-agent-harness-toggle-mode)
         (should (eq gptel-agent-harness--mode 'build))
         (should (= 1 (length gptel-agent-harness--pending-prompts)))
@@ -1883,7 +1883,7 @@ the transition / request)."
       (should (equal (gptel-agent-harness-commands--read-review-prompt)
                      "test review prompt")))
     (delete-file temp-file))
-  (let ((gptel-agent-harness-commands--review-prompt-file "/nonexistent/review.txt"))
+  (let ((gptel-agent-harness-commands--review-prompt-file "/nonexistent/review.md"))
     (should-error (gptel-agent-harness-commands--read-review-prompt)))
   ;; Initialize prompt
   (let ((temp-file (make-temp-file "initialize-" nil ".txt" "initialize prompt")))
@@ -1891,7 +1891,7 @@ the transition / request)."
       (should (equal (gptel-agent-harness-commands--read-initialize-prompt)
                      "initialize prompt")))
     (delete-file temp-file))
-  (let ((gptel-agent-harness-commands--initialize-prompt-file "/nonexistent/init.txt"))
+  (let ((gptel-agent-harness-commands--initialize-prompt-file "/nonexistent/init.md"))
     (should-error (gptel-agent-harness-commands--read-initialize-prompt)))
   ;; Summary prompt
   (let ((temp-file (make-temp-file "summary-" nil ".txt" "Summarize this.")))
@@ -1899,7 +1899,7 @@ the transition / request)."
       (should (equal (gptel-agent-harness-commands--read-summary-prompt)
                      "Summarize this.")))
     (delete-file temp-file))
-  (let ((gptel-agent-harness-commands--summary-prompt-file "/nonexistent/summary.txt"))
+  (let ((gptel-agent-harness-commands--summary-prompt-file "/nonexistent/summary.md"))
     (should-error (gptel-agent-harness-commands--read-summary-prompt)))
   ;; Compact prompt
   (let ((temp-file (make-temp-file "compact-" nil ".txt" "compact instructions")))
@@ -1908,7 +1908,7 @@ the transition / request)."
           (should (equal (gptel-agent-harness--read-compact-prompt)
                          "compact instructions")))
       (delete-file temp-file)))
-  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
+  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.md"))
     (should-error (gptel-agent-harness--read-compact-prompt))))
 
 (ert-deftest gptel-agent-harness-test-substitute-placeholders ()
@@ -2305,21 +2305,21 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
 
 (ert-deftest gptel-agent-harness-test-custom-name-sanitize ()
   "Test custom command name derivation is symbol-safe."
-  (should (equal (gptel-agent-harness-commands--custom-name "/x/Explain.txt")
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/Explain.md")
                  "explain"))
-  (should (equal (gptel-agent-harness-commands--custom-name "/x/Fix Bug!.txt")
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/Fix Bug!.md")
                  "fix-bug"))
-  (should (equal (gptel-agent-harness-commands--custom-name "/x/write_docs.txt")
+  (should (equal (gptel-agent-harness-commands--custom-name "/x/write_docs.md")
                  "write-docs")))
 
 (ert-deftest gptel-agent-harness-test-custom-load-discovers-files ()
-  "Test `load-custom' defines one command per .txt file and ignores others."
+  "Test `load-custom' defines one command per .md file and ignores others."
   (gptel-agent-harness-test--with-temp-dir dir
-    ;; Two prompt files plus a non-txt file that must be ignored.  Names are
+    ;; Two prompt files plus a non-md file that must be ignored.  Names are
     ;; unique so they never collide with load-time example commands.
-    (with-temp-file (expand-file-name "tfoo.txt" dir) (insert "Foo ${path}."))
-    (with-temp-file (expand-file-name "tbar.txt" dir) (insert "Bar: $ARGUMENTS"))
-    (with-temp-file (expand-file-name "notes.md" dir) (insert "ignore me"))
+    (with-temp-file (expand-file-name "tfoo.md" dir) (insert "Foo ${path}."))
+    (with-temp-file (expand-file-name "tbar.md" dir) (insert "Bar: $ARGUMENTS"))
+    (with-temp-file (expand-file-name "notes.txt" dir) (insert "ignore me"))
     (let ((gptel-agent-harness-commands--custom-commands nil))
       (let ((defined (gptel-agent-harness-commands-load-custom dir)))
         (unwind-protect
@@ -2336,8 +2336,8 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
 (ert-deftest gptel-agent-harness-test-custom-does-not-clobber-builtin ()
   "Test discovery refuses to overwrite an existing non-custom command."
   (gptel-agent-harness-test--with-temp-dir dir
-    ;; A file named review.txt would map to the built-in review command.
-    (with-temp-file (expand-file-name "review.txt" dir) (insert "custom review"))
+    ;; A file named review.md would map to the built-in review command.
+    (with-temp-file (expand-file-name "review.md" dir) (insert "custom review"))
     (let ((gptel-agent-harness-commands--custom-commands nil)
           (orig (symbol-function 'gptel-agent-harness-commands-review)))
       (let ((defined (gptel-agent-harness-commands-load-custom dir)))
@@ -2349,7 +2349,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
   "Test an invoked custom command spawns a buffer with substituted prompt."
   (declare-function gptel-agent-harness-commands-trun "gptel-agent-harness" (&rest _))
   (gptel-agent-harness-test--with-temp-dir dir
-    (with-temp-file (expand-file-name "trun.txt" dir)
+    (with-temp-file (expand-file-name "trun.md" dir)
       (insert "Explain code in ${path}. Focus: $ARGUMENTS"))
     (let ((gptel-agent-harness-commands--custom-commands nil)
           (gptel-send-called nil))
