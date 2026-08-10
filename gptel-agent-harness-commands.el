@@ -191,7 +191,7 @@ without waiting for the automatic trigger."
 
 (defconst gptel-agent-harness-commands--summary-prompt-file
   (expand-file-name
-   "prompts/summary.txt"
+   "prompts/summary.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Failed to find gptel-agent-harness"))))
   "File path for the conversation summary prompt.")
@@ -288,7 +288,7 @@ auto-discovered custom commands."
   "Define a new-session agent command COMMAND from a prompt file.
 
 KEY is a symbol (e.g. `review'); the prompt text is read from the file
-KEY.txt in the package prompt directory.  KEY derives the prompt-file
+KEY.md in the package prompt directory.  KEY derives the prompt-file
 constant `gptel-agent-harness-commands--KEY-prompt-file' and the reader
 `gptel-agent-harness-commands--read-KEY-prompt'.
 
@@ -304,7 +304,7 @@ KICKOFF is inserted verbatim (include a trailing newline if desired)."
          (const-sym (intern (format "%s--%s-prompt-file" prefix key)))
          (reader-sym (intern (format "%s--read-%s-prompt" prefix key)))
          (desc (capitalize (symbol-name key)))
-         (rel-path (format "prompts/%s.txt" key)))
+         (rel-path (format "prompts/%s.md" key)))
     `(progn
        (defconst ,const-sym
          (expand-file-name
@@ -391,7 +391,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
 
 ;;;; Auto-Discovered Custom Commands
 ;;
-;; Any `NAME.txt' file dropped into `gptel-agent-harness-commands-custom-dir'
+;; Any `NAME.md' file dropped into `gptel-agent-harness-commands-custom-dir'
 ;; becomes the interactive command `gptel-agent-harness-commands-NAME'.  The
 ;; file contents are the system prompt; ${path} is replaced with the project
 ;; root and $ARGUMENTS with the (optional) user input read interactively.
@@ -404,7 +404,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Failed to find gptel-agent-harness"))))
   "Directory scanned for custom command prompt files.
-Each `NAME.txt' file defines the interactive command
+Each `NAME.md' file defines the interactive command
 `gptel-agent-harness-commands-NAME'.  See
 `gptel-agent-harness-commands-load-custom'."
   :type 'directory
@@ -417,7 +417,7 @@ Each `NAME.txt' file defines the interactive command
   "Return a sanitized, symbol-safe command basename derived from FILE."
   (let ((base (downcase (file-name-base file))))
     ;; Collapse any run of non-alphanumeric characters into a single dash and
-    ;; trim leading/trailing dashes, so \"Fix Bug!.txt\" -> \"fix-bug\".
+    ;; trim leading/trailing dashes, so \"Fix Bug!.md\" -> \"fix-bug\".
     (string-trim (replace-regexp-in-string "[^a-z0-9]+" "-" base) "-+" "-+")))
 
 (defun gptel-agent-harness-commands--define-custom-command (file)
@@ -472,14 +472,14 @@ Defined by `gptel-agent-harness-commands-load-custom'."
 (defun gptel-agent-harness-commands-load-custom (&optional dir)
   "Discover and define custom commands from DIR.
 DIR defaults to `gptel-agent-harness-commands-custom-dir'.  Each
-`NAME.txt' file becomes `gptel-agent-harness-commands-NAME'.  Existing
+`NAME.md' file becomes `gptel-agent-harness-commands-NAME'.  Existing
 harness-defined custom commands are redefined; names already bound to
 other functions are skipped.  Returns the list of command symbols."
   (interactive)
   (let ((dir (or dir gptel-agent-harness-commands-custom-dir))
         (defined nil))
     (when (and dir (file-directory-p dir))
-      (dolist (file (sort (directory-files dir t "\\.txt\\'") #'string<))
+      (dolist (file (sort (directory-files dir t "\\.md\\'") #'string<))
         (unless (file-directory-p file)
           (when-let* ((sym (gptel-agent-harness-commands--define-custom-command
                             file)))
