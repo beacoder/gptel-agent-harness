@@ -39,7 +39,6 @@
 (require 'gptel-agent-harness-agent)
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)
-(require 'gptel-agent-harness-safety)
 (require 'gptel-agent-harness-fsm)
 (require 'cl-lib)
 (require 'format-spec)
@@ -101,7 +100,7 @@ more specific patterns before general ones."
 
 (defconst gptel-agent-harness-compact-prompt-file
   (expand-file-name
-   "prompts/compact.txt"
+   "prompts/compact.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Gptel-agent-harness not found"))))
   "File path for the context compaction prompt.")
@@ -116,21 +115,21 @@ more specific patterns before general ones."
 
 (defconst gptel-agent-harness-plan-prompt-file
   (expand-file-name
-   "prompts/plan.txt"
+   "prompts/plan.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Gptel-agent-harness not found"))))
   "File path for the plan mode instruction prompt.")
 
 (defconst gptel-agent-harness-plan-mode-prompt-file
   (expand-file-name
-   "prompts/plan-mode.txt"
+   "prompts/plan-mode.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Gptel-agent-harness not found"))))
   "File path for the plan mode workflow prompt.")
 
 (defconst gptel-agent-harness-build-switch-prompt-file
   (expand-file-name
-   "prompts/build-switch.txt"
+   "prompts/build-switch.md"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Gptel-agent-harness not found"))))
   "File path for the switch-back-to-build prompt.")
@@ -761,8 +760,7 @@ The file lives in a per-session subdirectory of
 a unique `make-temp-name' suffix), keeping plan files of
 concurrent sessions on the same project isolated.  Returns the
 cached `gptel-agent-harness--plan-file' when set, otherwise a
-freshly computed path — the caller stores it in that variable once
-the safety check has passed."
+freshly computed path — the caller stores it in that variable once."
   (or gptel-agent-harness--plan-file
       (let* ((proj-dir (or gptel-agent-harness--project-dir default-directory))
              (proj-name (file-name-nondirectory (directory-file-name proj-dir)))
@@ -774,10 +772,8 @@ the safety check has passed."
 
 (defun gptel-agent-harness--ensure-plan-file ()
   "Ensure the plan file exists, creating an empty one if missing.
-Signals an error if the plan file path is forbidden by the safety
-layer.  Returns the absolute plan file path."
+Returns the absolute plan file path."
   (let ((path (gptel-agent-harness--plan-file-path)))
-    (gptel-agent-harness-safety--check-path path "Plan file")
     (unless (file-exists-p path)
       (make-directory (file-name-directory path) t)
       (write-region "" nil path))
@@ -1213,7 +1209,6 @@ Provides completion and context supervision."
       (progn
         (gptel-agent-harness-tools-enable)
         (gptel-agent-harness-agent-enable)
-        (gptel-agent-harness-safety-enable)
         (gptel-agent-harness-fsm-enable)
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
@@ -1236,7 +1231,6 @@ Provides completion and context supervision."
     ;; disable
     (gptel-agent-harness-agent-disable)
     (gptel-agent-harness-tools-disable)
-    (gptel-agent-harness-safety-disable)
     (gptel-agent-harness-fsm-disable)
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
@@ -1264,8 +1258,6 @@ Provides completion and context supervision."
           (force-mode-line-update))))
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
-
-;; (require 'ert) — tests have moved to gptel-agent-harness-test.el
 
 (provide 'gptel-agent-harness)
 ;;; gptel-agent-harness.el ends here
