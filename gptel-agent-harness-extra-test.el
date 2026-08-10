@@ -272,6 +272,16 @@ top-level-p) see them."
         (should-not (member gptel-agent-harness-tools--custom-option
                             offered-choices))))))
 
+(ert-deftest gptel-agent-harness-test-question-ask-questions-list-input ()
+  "Test `--ask-questions' accepts a plain list of question plists."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _) (car choices))))
+    (let ((result (gptel-agent-harness-tools--ask-questions
+                   (list (list :question "L1?" :options ["a" "b"])
+                         (list :question "L2?" :options ["c"])))))
+      (should (string-match-p "\"L1\\?\" = \"a\"" result))
+      (should (string-match-p "\"L2\\?\" = \"c\"" result)))))
+
 (ert-deftest gptel-agent-harness-test-question-register-unregister ()
   "Test Question tool registration and unregistration."
   (let ((gptel-agent-harness-tools--question-tool nil)
@@ -337,6 +347,23 @@ top-level-p) see them."
           (should (eq gptel-agent-harness--mode 'plan))
           (should (null gptel-agent-harness--pending-prompts)))))))
 
+(ert-deftest gptel-agent-harness-test-plan-exit-approved-p-batch ()
+  "`--plan-exit-approved-p' uses `yes-or-no-p' in batch mode."
+  (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+    (should (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))
+  (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+    (should-not (gptel-agent-harness-tools--plan-exit-approved-p "Approve?"))))
+
+(ert-deftest gptel-agent-harness-test-plan-exit-approved-p-interactive ()
+  "`--plan-exit-approved-p' uses `read-multiple-choice' interactively."
+  (let ((noninteractive nil))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (_prompt _choices) (cons ?y "yes"))))
+      (should (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (_prompt _choices) (cons ?n "no"))))
+      (should-not (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))))
+
 (ert-deftest gptel-agent-harness-test-plan-exit-register-unregister ()
   "Test PlanExit tool registration and unregistration."
   (let ((gptel-agent-harness-tools--plan-exit-tool nil)
@@ -398,6 +425,17 @@ tool unusable on machines without it."
       (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
         (should-error (gptel-agent-harness-tools--glob "*.txt" temp-dir)
                       :type 'error)))))
+
+(ert-deftest gptel-agent-harness-test-glob-defaults-to-current-directory ()
+  "Test glob defaults to the current directory when PATH is nil."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (with-temp-file (expand-file-name "hit.txt" temp-dir) (insert "x"))
+      (with-temp-file (expand-file-name "miss.log" temp-dir) (insert "x"))
+      (let ((result (gptel-agent-harness-tools--glob "*.txt")))
+        (should (string-match-p "hit\\.txt" result))
+        (should-not (string-match-p "miss\\.log" result))))))
 
 ;;;; Grep Tool Tests
 
@@ -463,6 +501,51 @@ tool unusable on machines without it."
       (let ((result (gptel-agent-harness-tools--grep
                      "--flag-like" (expand-file-name "test.txt" temp-dir))))
         (should (string-match-p "flag-like-pattern" result))))))
+
+(ert-deftest gptel-agent-harness-test-grep-fallback-rg ()
+  "Outside git, grep falls back to ripgrep when available."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (with-temp-file (expand-file-name "file.txt" temp-dir)
+        (insert "alpha beta\n"))
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (cmd &optional _remote)
+                   (pcase cmd
+                     ("git" nil)
+                     ("rg" t)
+                     ("grep" t))))
+                ((symbol-function 'process-file)
+                 (lambda (_program &optional _infile _destination _display &rest _args)
+                   (insert "file.txt:1:alpha beta\n")
+                   0)))
+        (let ((result (gptel-agent-harness-tools--grep "alpha" temp-dir)))
+          (should (string-match-p "alpha beta" result)))))))
+
+(ert-deftest gptel-agent-harness-test-grep-fallback-plain-grep ()
+  "Outside git, grep falls back to plain grep when ripgrep is missing."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (with-temp-file (expand-file-name "file.txt" temp-dir)
+        (insert "alpha beta\n"))
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (cmd &optional _remote)
+                   (pcase cmd
+                     ("git" nil)
+                     ("rg" nil)
+                     ("grep" t))))
+                ((symbol-function 'process-file)
+                 (lambda (_program &optional _infile _destination _display &rest _args)
+                   (insert "file.txt:1:alpha beta\n")
+                   0)))
+        (let ((result (gptel-agent-harness-tools--grep "alpha" temp-dir)))
+          (should (string-match-p "alpha beta" result)))))))
+
+(ert-deftest gptel-agent-harness-test-grep-no-tool-available ()
+  "Outside git with no rg/grep available, grep signals an error."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+      (should-error (gptel-agent-harness-tools--grep "alpha" temp-dir)
+                    :type 'error))))
 
 ;;;; FSM Hardening Module Tests
 
@@ -616,6 +699,16 @@ outgoing message) sees it."
          fsm))
       (should (stringp seen-result))
       (should (string-match-p "no result" seen-result)))))
+
+(ert-deftest gptel-agent-harness-test-fsm-process-tool-call-verbose-duplicate ()
+  "`--process-tool-call-advice' logs the duplicate skip when verbose."
+  (let ((gptel-agent-harness-verbose t)
+        (orig-calls 0))
+    (let ((tool-call (list :name "tool1" :result "done")))
+      (gptel-agent-harness-fsm--process-tool-call-advice
+       (lambda (&rest _) (cl-incf orig-calls))
+       'fsm 'tool-spec tool-call "late")
+      (should (= orig-calls 0)))))
 
 (ert-deftest gptel-agent-harness-test-fsm-enable-disable ()
   "`gptel-agent-harness-fsm-enable' adds advice, `-disable' removes it."
