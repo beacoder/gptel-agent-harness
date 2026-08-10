@@ -9,7 +9,6 @@ It adds completion supervision, context management, session persistence, opencod
 - **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts.
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
-- **Safety layer** — Forbidden-path guards for all file tools, Bash timeout, tiered Bash approval that respects `gptel-confirm-tool-calls`.
 - **FSM hardening** — Narrow advice on gptel's state machine so malformed tool calls/results can never wedge a request.
 - **Build/Plan mode** — Per-buffer agent modes (default: build), with a `PlanExit` tool for user-approved switch to build.
 - **OpenCode agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
@@ -48,7 +47,6 @@ It adds completion supervision, context management, session persistence, opencod
                '("openai/gpt-oss-120b" . 128000))
   (setq gptel-agent-harness-subagent-model "deepseek-v4-flash")   ; cheap model
   (setq gptel-agent-harness-subagent-backend nil)                 ; inherit backend
-  (setq gptel-agent-harness-safety-bash-timeout 600)              ; extend timeout to 10 minutes
   ;; Optional keybindings
   (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
   (global-set-key (kbd "C-c g m") #'gptel-agent-harness-toggle-mode)
@@ -124,7 +122,7 @@ The built-in's narrowing/position approach caused issues with repeated compactio
 
 - `gptel-agent-harness-compact-header` — Header text (default: `"**[Compacted Summary]**\n\n"`).
 - `gptel-agent-harness-compact-separator` — Separator text (default: `"\n\n---\n\n**[Context compacted]**\n\n---\n\n"`).
-- Compaction prompt: edit `prompts/compact.txt` directly.
+- Compaction prompt: edit `prompts/compact.md` directly.
 
 ## Session Management
 
@@ -149,7 +147,6 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 | `gptel-agent-harness-commands-load-custom` | (Re)discover custom commands from the custom dir |
 | `gptel-agent-harness-restore-session` | Restore a saved session |
 | `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
-| `gptel-agent-harness-safety-clear-session` | Reset session Bash allow/deny decisions |
 
 ## Sub-Agent Model/Backend
 
@@ -171,7 +168,7 @@ sub-agent request:
 
 ## Custom Commands
 
-Drop a `NAME.txt` prompt file into `gptel-agent-harness-commands-custom-dir`
+Drop a `NAME.md` prompt file into `gptel-agent-harness-commands-custom-dir`
 (default: `prompts/commands/`) and it becomes the interactive command
 `gptel-agent-harness-commands-NAME`. The file contents are used as the agent's
 system prompt, with two placeholders substituted:
@@ -182,13 +179,13 @@ system prompt, with two placeholders substituted:
 Discovery runs when the package loads. After adding or renaming a file, run
 `M-x gptel-agent-harness-commands-load-custom` to pick it up without restarting.
 
-- `gptel-agent-harness-commands-custom-dir` — Directory scanned for `*.txt`
+- `gptel-agent-harness-commands-custom-dir` — Directory scanned for `*.md`
   command prompts (default: `prompts/commands/`).
-- Names are sanitized to be symbol-safe (`Fix Bug!.txt` → `…-commands-fix-bug`).
+- Names are sanitized to be symbol-safe (`Fix Bug!.md` → `…-commands-fix-bug`).
 - A file whose derived name matches an existing built-in command (e.g.
-  `review.txt`) is skipped so built-ins are never clobbered.
+  `review.md`) is skipped so built-ins are never clobbered.
 
-An example `explain` command ships in `prompts/commands/explain.txt`.
+An example `explain` command ships in `prompts/commands/explain.md`.
 
 ## Enhanced Tools
 
@@ -196,66 +193,6 @@ An example `explain` command ships in `prompts/commands/explain.txt`.
 - **Grep**: Uses `git grep -e` for safe regex; falls back to `rg` or `grep`.
 - **Question**: LLM asks user via `completing-read` (single/multi-select, free-text). Encourage usage by adding guidance to your system prompt.
 - **PlanExit**: LLM asks the user for approval to leave plan mode. On approval the buffer switches to build mode and the agent starts to execute the approved plan.
-
-## Safety
-
-The safety layer (`gptel-agent-harness-safety.el`) is enabled automatically by
-`gptel-agent-harness-mode`. It adds guards on top of gptel's own tool
-confirmation (which still runs first and is controlled by
-`gptel-confirm-tool-calls`).
-
-### Forbidden Paths
-
-Read/Glob/Grep/Edit/Insert/Write operations whose expanded path matches
-`gptel-agent-harness-safety-forbidden-paths` are rejected with an error before
-any side effect. Bash commands are blocked as well: the command is split into
-tokens and each is matched as a path, so anchored regexps (the default is
-`` \`/mnt/ ``) work on the paths a command references rather than on the raw
-command string.
-
-### Bash Timeout
-
-Asynchronous Bash commands are killed after
-`gptel-agent-harness-safety-bash-timeout` seconds (default: 300) and report a
-timeout error instead of hanging the agent FSM. Set to nil to disable.
-
-### Tiered Bash Approval
-
-Bash commands are classified into three tiers:
-
-| Tier | Examples | Behavior |
-|------|----------|----------|
-| Catastrophic | `rm -rf /`, `mkfs`, `dd if=`, `shutdown`, `reboot`, `> /dev/sdX` | Always refused, never prompted, cannot be overridden by any setting |
-| Destructive | `sudo`, `pkill`, `killall` | Run without prompting; refused only when the approval policy is `block` |
-| Dangerous | `rm -rf <dir>`, `git push --force`, `git reset --hard`, `chmod -R 777`, `chown -R`, `su -`, `tar --remove-files` | Subject to the approval policy |
-
-`gptel-agent-harness-safety-bash-approval` (default `confirm`):
-- `confirm` — dangerous commands are confirmed with the user, unless
-  `gptel-confirm-tool-calls` is nil, in which case the user's opt-out of
-  confirmation is respected and the command runs without prompting
-  (catastrophic commands are still refused).
-- `block` — dangerous and destructive commands are refused without asking.
-- nil — no approval prompts at all (catastrophic commands are still refused).
-
-### Session Allow/Deny
-
-When a dangerous command is prompted, `read-multiple-choice` offers:
-- `y` — run once
-- `n` — deny once
-- `a` — always allow this command for the current session
-- `d` — always deny this command for the current session
-
-Decisions are remembered per session buffer.
-`M-x gptel-agent-harness-safety-clear-session` resets them.
-
-### Options
-
-- `gptel-agent-harness-safety-forbidden-paths` — Regexps for paths tools must never touch (default: `("\\`/mnt/")`, anchored so unrelated paths containing a `mnt` component are not blocked).
-- `gptel-agent-harness-safety-bash-timeout` — Max Bash runtime in seconds (default: 300, nil disables).
-- `gptel-agent-harness-safety-bash-approval` — Approval policy: nil / `confirm` / `block`.
-- `gptel-agent-harness-safety-bash-dangerous-patterns` — Prompted tier (respects `gptel-confirm-tool-calls`).
-- `gptel-agent-harness-safety-bash-destructive-patterns` — Never-prompt tier.
-- `gptel-agent-harness-safety-bash-catastrophic-patterns` — Always-blocked tier.
 
 ## Build/Plan Mode
 
@@ -273,16 +210,6 @@ M-x gptel-agent-harness-set-mode RET build|plan   ; set explicitly
 The mode-line shows `[Build]`/`[Plan]` (with a tooltip) immediately before the
 `[Ctx:...]` context indicator.
 
-### Read-Only Enforcement
-
-Edit/Insert/Write/mkdir are refused for every path except the plan file. Bash
-is validated per segment (split on `&&`, `||`, `|`, `;`, `&`, newlines): each
-segment's first word must be in
-`gptel-agent-harness-safety-plan-readonly-bash-commands` and must contain no
-mutating construct (redirection, `tee`, `xargs`, `sudo`, mutating `git`
-subcommand). Command/process substitution (`$(...)`, backticks, `<(...)`,
-`>(...)`) is refused wholesale.
-
 ### Options
 
 - `gptel-agent-harness-plan-file-name` — Plan file name (default: `PLAN.md`),
@@ -293,8 +220,6 @@ subcommand). Command/process substitution (`$(...)`, backticks, `<(...)`,
   replaced with the plan file path).
 - `gptel-agent-harness-tools-plan-exit-approved-message` — Message queued after
   `PlanExit` approval (`%s` → plan file path).
-- `gptel-agent-harness-safety-plan-readonly-bash-commands` — First-word
-  whitelist of Bash commands allowed during plan mode.
 
 ## FSM Hardening
 
@@ -326,14 +251,13 @@ conversation.
 ```
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
-├── gptel-agent-harness-safety.el   # Safety: path guards, Bash approval
 ├── gptel-agent-harness-fsm.el      # FSM hardening advice on upstream gptel
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
 ├── gptel-agent-harness-tools.el    # Enhanced tools + Question/PlanExit tools
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
 ├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT tests: core supervision/context/commands
-├── gptel-agent-harness-extra-test.el # ERT tests: safety, tools
+├── gptel-agent-harness-extra-test.el # ERT tests: tools
 ├── prompts/                        # Prompt templates
 │   └── commands/                   # Auto-discovered custom command prompts
 ├── rules/                          # Agent rules (task-completion-rules.md)
