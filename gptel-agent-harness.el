@@ -69,7 +69,7 @@ Reset whenever the LLM performs tool calls."
   "Review the original user request and the Task Completion Rules in the context. \
 Verify whether all completion criteria are satisfied. \
 If all criteria are already satisfied and verified, finish the task normally. \
-Otherwise, continue by making tool calls. Do not stop until the rules are fully met."
+Otherwise, continue working and make the necessary tool calls. Do not stop until the rules are fully met."
   "Message injected when the agent tries to stop."
   :type 'string
   :group 'gptel-agent-harness)
