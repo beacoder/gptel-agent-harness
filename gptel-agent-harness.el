@@ -1,4 +1,4 @@
-;;; gptel-agent-harness.el --- Autonomous coding-agent harness for gptel-agent -*- lexical-binding: t -*-
+;;; gptel-agent-harness.el --- An execution harness for gptel-agent that adds reliable, autonomous coding-agent behavior -*- lexical-binding: t -*-
 ;;
 ;; Copyright (C) 2026 Huming Chen
 ;;
@@ -26,7 +26,9 @@
 ;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ;;; Commentary:
-;;
+
+;; An execution harness for gptel-agent that adds reliable, autonomous coding-agent behavior.
+
 ;; Usage:
 ;;   (require 'gptel-agent-harness)
 ;;   (gptel-agent-harness-mode 1)
