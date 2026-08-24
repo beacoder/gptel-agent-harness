@@ -1,5 +1,9 @@
 # gptel-agent-harness
 
+[[https://github.com/beacoder/gptel-agent-harness/actions][file:https://github.com/beacoder/gptel-agent-harness/workflows/CI/badge.svg]]
+[[http://melpa.org/#/gptel-agent-harness][file:http://melpa.org/packages/gptel-agent-harness-badge.svg]]
+[[996.icu][file:https://img.shields.io/badge/link-996.icu-red.svg]]
+
 An execution harness for `gptel-agent` that adds reliable, autonomous coding-agent behavior.
 
 It adds completion supervision, context management, session persistence, enhanced tools, Plan/Build modes, and OpenCode-like agent behavior — while keeping `gptel-agent` and upstream `gptel` intact.
