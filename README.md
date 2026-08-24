@@ -36,14 +36,7 @@ For package installation, add the repository to your Emacs package configuration
 
 ## Quick Start
 
-Enable the harness in a `gptel` buffer:
-
-```elisp
-(require 'gptel-agent-harness)
-(gptel-agent-harness-mode 1)
-```
-
-For a more complete setup:
+Enable the harness with `use-package`:
 
 ```elisp
 (use-package gptel-agent-harness
