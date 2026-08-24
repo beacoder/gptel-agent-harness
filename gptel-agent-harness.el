@@ -268,8 +268,8 @@ See `gptel-agent-harness--model-name' for the model resolution."
      (cdr (seq-find
            (lambda (entry) (string-match-p (car entry) model))
            gptel-agent-harness-context-windows))
-     ;; safe fallback
-     32768)))
+     ;; fallback to 128000.
+     128000)))
 
 (defun gptel-agent-harness--cjk-char-p (c)
   "Return non-nil if C is a CJK or full-width character."
