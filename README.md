@@ -181,6 +181,11 @@ site-lisp/
 * `compat` ≥ 30.1.0.0
 * Optional: `git`, `tree`, `ripgrep`
 
+## Related projects
+
+- [python-agent-harness](https://github.com/beacoder/python-agent-harness) — the Python implementation that inspired by this project.
+- [opencode](https://github.com/anomalyco/opencode) — the primary source of many prompts and coding-agent behaviors.
+
 ## License
 
 GPL-3.0-or-later
