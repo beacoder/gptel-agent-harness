@@ -166,7 +166,6 @@ site-lisp/
 ├── gptel-agent-harness-commands.el  # Built-in and custom commands
 ├── prompts/                          # Prompt templates
 │   └── commands/                     # Custom command prompts
-├── rules/                            # Agent rules
 └── agents/                           # Agent definitions
 ```
 
