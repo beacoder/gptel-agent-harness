@@ -17,15 +17,6 @@ For a standalone Python implementation of the same core ideas, see [`python-agen
 
 ![demo.png](demo.png)
 
-## Installation
-
-```elisp
-(require 'gptel-agent-harness)
-(gptel-agent-harness-mode 1)
-```
-
-For package installation, add the repository to your Emacs package configuration, then enable the minor mode.
-
 ## Features
 
 * **Completion supervision** — Nudges the agent to verify task completion instead of stopping prematurely.
