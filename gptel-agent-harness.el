@@ -6,7 +6,7 @@
 ;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
-;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel-agent "0.0.1"))
+;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel "0.9.9") (gptel-agent "0.0.1"))
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience, ai, agent
 ;; Package-Description: Agent execution harness for gptel-agent.
