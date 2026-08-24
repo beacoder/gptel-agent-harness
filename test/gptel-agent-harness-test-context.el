@@ -44,15 +44,15 @@
 (ert-deftest gptel-agent-harness-test-context-ratio-for-fsm ()
   "Test FSM-based context ratio calculation."
   (let ((gptel-agent-harness-verbose nil)
-        (gptel-model "unknown-model"))  ; 32768 fallback
+        (gptel-model "unknown-model"))  ; 128000 fallback
     (gptel-agent-harness-test--with-buffer buf
       (let* ((fsm (gptel-agent-harness-test--make-fsm buf
                     :system (make-string 40000 ?x)
                     :messages (vector)))
              (ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
-        ;; 40000/4 = 10000 tokens, 10000/32768 ≈ 0.305
-        (should (> ratio 0.3))
-        (should (< ratio 0.31))))))
+        ;; 40000/4 = 10000 tokens, 10000/128000 ≈ 0.078
+        (should (> ratio 0.07))
+        (should (< ratio 0.08))))))
 
 (ert-deftest gptel-agent-harness-test-context-ratio-indicator ()
   "Test context ratio indicator string generation."
@@ -87,7 +87,7 @@
   "Compute and store the ratio for a top-level FSM, and no-op otherwise.
 It must be a no-op for non-top-level FSMs or when :data is still a buffer."
   (let ((gptel-agent-harness-verbose nil)
-        (gptel-model "unknown-model"))  ; 32768 fallback
+        (gptel-model "unknown-model"))  ; 128000 fallback
     ;; Top-level FSM with real data → ratio + raw estimate stored
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf

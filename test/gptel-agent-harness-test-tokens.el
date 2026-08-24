@@ -98,7 +98,7 @@
   (let ((gptel-model "gpt-5-mini-2026"))
     (should (= (gptel-agent-harness--context-window) 128000)))
   (let ((gptel-model "unknown-model-xyz"))
-    (should (= (gptel-agent-harness--context-window) 32768))))
+    (should (= (gptel-agent-harness--context-window) 128000))))
 
 ;;;; Context Token Estimation from FSM Data
 
@@ -270,7 +270,7 @@ Covers plain string content (OpenAI-style) and a list of `:text' parts
 (ert-deftest gptel-agent-harness-test-calibration-applied-to-ratio ()
   "Test that context ratio incorporates calibration factor."
   (let ((gptel-agent-harness-verbose nil)
-        (gptel-model "unknown-model"))  ; 32768 fallback
+        (gptel-model "unknown-model"))  ; 128000 fallback
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--token-calibration 1.5))
@@ -278,9 +278,9 @@ Covers plain string content (OpenAI-style) and a list of `:text' parts
                     :system (make-string 40000 ?x)
                     :messages (vector)))
              (ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
-        ;; Raw: 10000 tokens, calibrated: 15000, ratio: 15000/32768 ≈ 0.458
-        (should (> ratio 0.44))
-        (should (< ratio 0.47))))))
+        ;; Raw: 10000 tokens, calibrated: 15000, ratio: 15000/128000 ≈ 0.117
+        (should (> ratio 0.11))
+        (should (< ratio 0.12))))))
 
 ;;;; Content Extractors
 
