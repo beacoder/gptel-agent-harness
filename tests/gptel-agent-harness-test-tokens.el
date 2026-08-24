@@ -480,6 +480,6 @@ Also renders malformed parts defensively without signalling."
 (provide 'gptel-agent-harness-test-tokens)
 
 ;; Local Variables:
-;; package-lint-main-file: "test/gptel-agent-harness-test.el"
+;; package-lint-main-file: "tests/gptel-agent-harness-test.el"
 ;; End:
 ;;; gptel-agent-harness-test-tokens.el ends here

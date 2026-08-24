@@ -46,7 +46,7 @@
 ;;   Emacs --batch -L /path/to/gptel \
 ;;     -L /path/to/gptel-agent \
 ;;     -L /path/to/gptel-agent-harness \
-;;     -L /path/to/gptel-agent-harness/test \
+;;     -L /path/to/gptel-agent-harness/tests \
 ;;     -l gptel-agent-harness-test \
 ;;     --eval '(ert-run-tests-batch "^gptel-agent-harness")'
 ;;

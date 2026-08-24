@@ -39,7 +39,7 @@
 ;;   Emacs --batch -L /path/to/gptel \
 ;;     -L /path/to/gptel-agent \
 ;;     -L /path/to/gptel-agent-harness \
-;;     -L /path/to/gptel-agent-harness/test \
+;;     -L /path/to/gptel-agent-harness/tests \
 ;;     -l gptel-agent-harness-test \
 ;;     --eval '(ert-run-tests-batch "^gptel-agent-harness")'
 ;;
@@ -200,6 +200,6 @@ message list to inject, and POSITION is the insertion index."
 (provide 'gptel-agent-harness-test-utils)
 
 ;; Local Variables:
-;; package-lint-main-file: "test/gptel-agent-harness-test.el"
+;; package-lint-main-file: "tests/gptel-agent-harness-test.el"
 ;; End:
 ;;; gptel-agent-harness-test-utils.el ends here

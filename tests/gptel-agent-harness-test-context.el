@@ -277,6 +277,6 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
 (provide 'gptel-agent-harness-test-context)
 
 ;; Local Variables:
-;; package-lint-main-file: "test/gptel-agent-harness-test.el"
+;; package-lint-main-file: "tests/gptel-agent-harness-test.el"
 ;; End:
 ;;; gptel-agent-harness-test-context.el ends here
