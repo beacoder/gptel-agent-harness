@@ -1,16 +1,15 @@
-;;; gptel-agent-harness.el --- Agent execution harness for gptel-agent -*- lexical-binding: t -*-
+;;; gptel-agent-harness.el --- Autonomous coding-agent harness for gptel-agent -*- lexical-binding: t -*-
 ;;
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Package-Version: 0.3
+;; Version: 0.3
+;; Created: 2026-07-15
+;; Keywords: programming, convenience, ai, agent
 ;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel "0.9.9") (gptel-agent "0.0.1"))
-;; Package-Author: Huming Chen
-;; Package-Keywords: programming, convenience, ai, agent
-;; Package-Description: Agent execution harness for gptel-agent.
-;;
+
 ;; This file is not part of GNU Emacs.
 
 ;; This program is free software; you can redistribute it and/or modify
