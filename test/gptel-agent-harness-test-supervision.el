@@ -453,7 +453,7 @@ the transition / request)."
       (let* ((fsm (gptel-agent-harness-test--make-fsm buf
                     :handlers gptel-send--handlers
                     :tools (vector (list :type "function"))
-                    :system (make-string 100000 ?x)
+                    :system (make-string 400000 ?x)
                     :messages (vector (list :role "user" :content "hi"))))
              (orig-called nil)
              (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
@@ -476,7 +476,7 @@ the transition / request)."
       (let* ((fsm (gptel-agent-harness-test--make-fsm buf
                     :handlers gptel-send--handlers
                     :tools (vector (list :type "function"))
-                    :system (make-string 100000 ?x)
+                    :system (make-string 400000 ?x)
                     :messages (vector (list :role "user" :content "hi"))))
              (orig-called nil)
              (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
