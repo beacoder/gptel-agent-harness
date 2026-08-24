@@ -100,10 +100,8 @@ more specific patterns before general ones."
   :group 'gptel-agent-harness)
 
 (defconst gptel-agent-harness-compact-prompt-file
-  (expand-file-name
-   "prompts/compact.md"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Gptel-agent-harness not found"))))
+  (or (locate-file "prompts/compact.md" load-path)
+      (error "Gptel-agent-harness prompt not found"))
   "File path for the context compaction prompt.")
 
 (defun gptel-agent-harness--read-compact-prompt ()
@@ -115,24 +113,18 @@ more specific patterns before general ones."
     (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
 
 (defconst gptel-agent-harness-plan-prompt-file
-  (expand-file-name
-   "prompts/plan.md"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Gptel-agent-harness not found"))))
+  (or (locate-file "prompts/plan.md" load-path)
+      (error "Gptel-agent-harness prompt not found"))
   "File path for the plan mode instruction prompt.")
 
 (defconst gptel-agent-harness-plan-mode-prompt-file
-  (expand-file-name
-   "prompts/plan-mode.md"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Gptel-agent-harness not found"))))
+  (or (locate-file "prompts/plan-mode.md" load-path)
+      (error "Gptel-agent-harness prompt not found"))
   "File path for the plan mode workflow prompt.")
 
 (defconst gptel-agent-harness-build-switch-prompt-file
-  (expand-file-name
-   "prompts/build-switch.md"
-   (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "Gptel-agent-harness not found"))))
+  (or (locate-file "prompts/build-switch.md" load-path)
+      (error "Gptel-agent-harness prompt not found"))
   "File path for the switch-back-to-build prompt.")
 
 ;;;; Internal State
