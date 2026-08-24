@@ -49,16 +49,6 @@ For a more complete setup:
 (use-package gptel-agent-harness
   :ensure t
   :config
-  (require 'gptel-context)
-
-  ;; Add task-completion rules to the LLM context.
-  (gptel-add-file
-   (expand-file-name
-    "rules/task-completion-rules.md"
-    (file-name-directory
-     (or (locate-library "gptel-agent-harness")
-         (error "gptel-agent-harness not found")))))
-
   (gptel-agent-harness-mode 1)
   (gptel-agent-update)
 

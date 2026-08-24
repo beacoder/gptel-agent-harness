@@ -249,6 +249,31 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
       (kill-buffer buf)
       (should (> (gptel-agent-harness--context-ratio-for-fsm fsm) 0)))))
 
+;;;; Task Completion Rules Context
+
+(ert-deftest gptel-agent-harness-test-add-task-completion-rules ()
+  "`--add-task-completion-rules' adds the rules file to `gptel-context'."
+  (let ((gptel-context nil))
+    (gptel-agent-harness--add-task-completion-rules)
+    (should (assoc gptel-agent-harness-task-completion-rules-file
+                   gptel-context #'equal))
+    ;; Idempotent: a second call does not duplicate the entry.
+    (gptel-agent-harness--add-task-completion-rules)
+    (should (= 1 (length gptel-context)))))
+
+(ert-deftest gptel-agent-harness-test-remove-task-completion-rules ()
+  "`--remove-task-completion-rules' removes the rules file from `gptel-context'."
+  (let ((gptel-context (list (list gptel-agent-harness-task-completion-rules-file)
+                             (list "/some/other/file.md"))))
+    (gptel-agent-harness--remove-task-completion-rules)
+    (should-not (assoc gptel-agent-harness-task-completion-rules-file
+                       gptel-context #'equal))
+    (should (assoc "/some/other/file.md" gptel-context #'equal)))
+  ;; Not present → no-op, no error.
+  (let ((gptel-context nil))
+    (gptel-agent-harness--remove-task-completion-rules)
+    (should-not gptel-context)))
+
 (provide 'gptel-agent-harness-test-context)
 
 ;; Local Variables:

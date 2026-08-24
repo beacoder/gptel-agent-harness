@@ -1185,6 +1185,39 @@ Adds hook to `gptel-post-response-functions' buffer-locally."
                #'gptel-agent-harness--update-token-calibration
                t))
 
+;;;; Task Completion Rules Context
+
+(defconst gptel-agent-harness-task-completion-rules-file
+  (or (locate-file "rules/task-completion-rules.md" load-path)
+      (error "Gptel-agent-harness rules not found"))
+  "File path of the task completion rules markdown file.")
+
+(declare-function gptel-add-file "gptel-context")
+(declare-function gptel-context-remove "gptel-context")
+
+(defun gptel-agent-harness--add-task-completion-rules ()
+  "Add the task completion rules file to the gptel context.
+No-op when the file is missing or `gptel-add-file' is unavailable.
+Adding is idempotent (`gptel-add-file' dedupes by path)."
+  (when (and (file-exists-p gptel-agent-harness-task-completion-rules-file)
+             (fboundp 'gptel-add-file))
+    (gptel-add-file gptel-agent-harness-task-completion-rules-file)
+    (when gptel-agent-harness-verbose
+      (message "gptel-agent-harness: added task completion rules to context"))))
+
+(defun gptel-agent-harness--remove-task-completion-rules ()
+  "Remove the task completion rules file from the gptel context.
+No-op when the file is not in `gptel-context' or
+`gptel-context-remove' is unavailable."
+  (when (and (boundp 'gptel-context)
+             (assoc gptel-agent-harness-task-completion-rules-file
+                    gptel-context #'equal)
+             (require 'gptel-context nil t)
+             (fboundp 'gptel-context-remove))
+    (gptel-context-remove gptel-agent-harness-task-completion-rules-file)
+    (when gptel-agent-harness-verbose
+      (message "gptel-agent-harness: removed task completion rules from context"))))
+
 ;;;; Minor Mode
 
 ;;;###autoload
@@ -1208,6 +1241,7 @@ Provides completion and context supervision."
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
+        (gptel-agent-harness--add-task-completion-rules)
         ;; Set up for already-open gptel buffers
         (dolist (buf (buffer-list))
           (with-current-buffer buf
@@ -1230,6 +1264,7 @@ Provides completion and context supervision."
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-plan-cleanup)
+    (gptel-agent-harness--remove-task-completion-rules)
     ;; Clean up from all gptel buffers
     (dolist (buf (buffer-list))
       (with-current-buffer buf
