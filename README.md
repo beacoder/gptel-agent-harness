@@ -49,12 +49,18 @@ For a more complete setup:
 (use-package gptel-agent-harness
   :ensure t
   :config
+  ;; add project related information into llm context, e.g: coding guideline, etc.
+  (require 'gptel-context)
+  (gptel-add-file (expand-file-name "~/.emacs.d/contexts"))
+  (add-to-list 'gptel-agent-skill-dirs "~/.emacs.d/skills")
   (gptel-agent-harness-mode 1)
   (gptel-agent-update)
-
   ;; Optional: use a cheaper model for sub-agents.
   (setq gptel-agent-harness-subagent-model "deepseek-v4-flash")
-  (setq gptel-agent-harness-subagent-backend nil))
+  (setq gptel-agent-harness-subagent-backend nil)
+  ;; add more context window settings.
+  (add-to-list 'gptel-agent-harness-context-windows '("openai/gpt-oss-120b" . 128000))
+  (add-to-list 'gptel-agent-harness-context-windows '("Qwen/Qwen3.5-35B-A3B" . 262144)))
 ```
 
 ## Usage
