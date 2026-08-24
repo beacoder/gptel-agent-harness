@@ -7,6 +7,8 @@ An execution harness for `gptel-agent` that adds reliable, autonomous coding-age
 
 It adds completion supervision, context management, session persistence, enhanced tools, Plan/Build modes, and OpenCode-like agent behavior — while keeping `gptel-agent` and upstream `gptel` intact.
 
+For a standalone Python implementation of the same core ideas, see [`python-agent-harness`](https://github.com/beacoder/python-agent-harness).
+
 ## Demo
 
 ![demo.png](demo.png)
