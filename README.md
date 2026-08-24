@@ -1,8 +1,7 @@
 # gptel-agent-harness
 
-[[https://github.com/beacoder/gptel-agent-harness/actions][file:https://github.com/beacoder/gptel-agent-harness/workflows/CI/badge.svg]]
-[[http://melpa.org/#/gptel-agent-harness][file:http://melpa.org/packages/gptel-agent-harness-badge.svg]]
-[[996.icu][file:https://img.shields.io/badge/link-996.icu-red.svg]]
+[![CI](https://github.com/beacoder/gptel-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/gptel-agent-harness/actions/workflows/ci.yml)
+[![996.icu](file:https://img.shields.io/badge/link-996.icu-red.svg)](996.icu)
 
 An execution harness for `gptel-agent` that adds reliable, autonomous coding-agent behavior.
 
