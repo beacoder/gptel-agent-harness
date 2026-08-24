@@ -1188,7 +1188,7 @@ Adds hook to `gptel-post-response-functions' buffer-locally."
 ;;;; Task Completion Rules Context
 
 (defconst gptel-agent-harness-task-completion-rules-file
-  (or (locate-file "rules/task-completion-rules.md" load-path)
+  (or (locate-file "prompts/task-completion-rules.md" load-path)
       (error "Gptel-agent-harness rules not found"))
   "File path of the task completion rules markdown file.")
 
