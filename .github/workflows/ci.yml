@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Package lint (emacs${{ matrix.emacs-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: ["29.3", "30.1"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Package lint
+        run: |
+          make package-lint
+
+  build:
+    name: Byte compile (emacs${{ matrix.emacs-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: ["29.3", "30.1", "snapshot"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Byte compile
+        run: |
+          make compile
+
+  test:
+    name: Tests (emacs${{ matrix.emacs-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: ["29.3", "30.1"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      # `make test-coverage` enforces the threshold via
+      # `gptel-agent-harness-coverage-minimum` (75%) and writes
+      # coverage.txt, so an insufficiently-tested change fails this job.
+      - name: Run tests with coverage
+        run: |
+          make test-coverage
+
+      - name: Coverage report (enforces fail_under)
+        run: |
+          cat coverage.txt
+          grep -q "Status: PASS" coverage.txt || exit 1
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.emacs-version }}
+          path: coverage.txt
+          if-no-files-found: ignore

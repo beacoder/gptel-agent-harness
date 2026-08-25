@@ -22,6 +22,7 @@ FILES = gptel-agent-harness.el \
 	tests/gptel-agent-harness-test-agent.el \
 	tests/gptel-agent-harness-test-tools.el \
 	tests/gptel-agent-harness-test-fsm.el \
+	tests/gptel-agent-harness-coverage.el \
 
 INIT_PACKAGES="(progn \
   (require 'package) \
@@ -48,7 +49,13 @@ compile: clean-elc
 test: clean-elc
 	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -L tests -batch -l gptel-agent-harness-test --eval '(ert-run-tests-batch-and-exit "^gptel-agent-harness")'
 
+test-coverage: clean-elc
+	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -L tests -batch \
+	  -l gptel-agent-harness-test \
+	  -l gptel-agent-harness-coverage \
+	  --eval '(gptel-agent-harness-coverage--run-with-report "coverage.txt")'
+
 clean-elc:
 	rm -f *.elc tests/*.elc
 
-.PHONY:	all compile test checkdoc clean-elc package-lint
+.PHONY:	all compile test test-coverage checkdoc clean-elc package-lint
