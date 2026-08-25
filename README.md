@@ -2,7 +2,7 @@
 
 # gptel-agent-harness
 
-[![CI](https://github.com/beacoder/gptel-agent-harness/actions/workflows/test.yml/badge.svg)](https://github.com/beacoder/gptel-agent-harness/actions/workflows/test.yml)
+[![CI](https://github.com/beacoder/gptel-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/gptel-agent-harness/actions/workflows/ci.yml)
 [![MELPA](https://melpa.org/packages/gptel-agent-harness-badge.svg)](https://melpa.org/#/gptel-agent-harness)
 
 </div>
