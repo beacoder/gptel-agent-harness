@@ -51,8 +51,9 @@ test: clean-elc
 
 test-coverage: clean-elc
 	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -L tests -batch \
-	  -l gptel-agent-harness-test \
 	  -l gptel-agent-harness-coverage \
+	  --eval '(gptel-agent-harness-coverage--start)' \
+	  -l gptel-agent-harness-test \
 	  --eval '(gptel-agent-harness-coverage--run-with-report "coverage.txt")'
 
 clean-elc:
