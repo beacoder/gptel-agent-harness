@@ -566,108 +566,30 @@ Returns nil when no text is found."
           (unless (string-empty-p s) s)))))
    (t nil)))
 
-(defun gptel-agent-harness--last-user-request (fsm)
-  "Return the last user message text from FSM, excluding nudge messages.
-
-Returns a plain string suitable for re-sending, or nil if none found.
-Multimodal message content (vectors/lists of parts, or Gemini :parts)
-is reduced to its text via `gptel-agent-harness--content-to-text', so
-the caller can safely `insert' the result."
-  (let* ((info (gptel-fsm-info fsm))
-         (data (plist-get info :data))
-         (messages (and (plistp data)
-                        (or (plist-get data :messages)
-                            (plist-get data :input)      ; OpenAI Responses API
-                            (plist-get data :contents)))) ; Gemini
-         (nudge gptel-agent-harness-nudge-message))
-    (when (vectorp messages)
-      (cl-loop for i downfrom (1- (length messages)) to 0
-               for msg = (aref messages i)
-               for text = (and (plistp msg)
-                               (equal (plist-get msg :role) "user")
-                               (gptel-agent-harness--content-to-text
-                                (or (plist-get msg :content)
-                                    (plist-get msg :parts))))
-               when (and text (not (equal text nudge)))
-               return text))))
-
-(defun gptel-agent-harness--mode-reminder-p (text)
-  "Return non-nil if TEXT is a harness-injected plan/build mode reminder.
-Mode reminders start with `<system-reminder>' or match the
-plan-exit approved message template."
-  (or (string-prefix-p "<system-reminder>" text)
-      (gptel-agent-harness--plan-exit-notice-p text)))
-
-(defun gptel-agent-harness--plan-exit-notice-p (text)
-  "Return non-nil if TEXT matches the plan-exit approved message template."
-  (let ((template gptel-agent-harness-tools-plan-exit-approved-message))
-    (if (not (string-match-p "%s" template))
-        (string= text template)
-      (let* ((parts (split-string template "%s" t))
-             (prefix (car parts))
-             (suffix (cadr parts)))
-        (and (string-prefix-p prefix text)
-             (or (null suffix) (string-suffix-p suffix text)))))))
-
 (defun gptel-agent-harness--user-prompt-texts (fsm)
   "Return all user prompt texts from FSM messages, oldest first.
 
-Excludes:
-- nudge messages (completion supervision, not user input)
-- previously compacted summary frames (old harness artifacts)
-- stale mode reminders (only the most recent contiguous batch is kept)
-
-The most recent batch of mode reminders IS preserved because it
-represents the current mode state (plan vs build).  Dropping all
-of them would leave the model unsure which mode is active."
+Extracts the text of every user-role message (multimodal content is
+reduced via `gptel-agent-harness--content-to-text') and applies the
+shared exclusion rules of
+`gptel-agent-harness-commands--filter-user-prompts'."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
          (messages (and (plistp data)
                         (or (plist-get data :messages)
                             (plist-get data :input)
-                            (plist-get data :contents))))
-         (nudge gptel-agent-harness-nudge-message)
-         (header gptel-agent-harness-compact-header)
-         is-reminder last-reminder-idx)
+                            (plist-get data :contents)))))
     (when (vectorp messages)
-      ;; Pass 1: classify each message position as reminder or not,
-      ;; and find the last reminder index.
-      (setq is-reminder (make-vector (length messages) nil))
-      (setq last-reminder-idx -1)
-      (cl-loop for i from 0 below (length messages)
-               for msg = (aref messages i)
-               when (and (plistp msg)
-                         (equal (plist-get msg :role) "user"))
-               do (let ((text (gptel-agent-harness--content-to-text
-                               (or (plist-get msg :content)
-                                   (plist-get msg :parts)))))
-                    (when (and text (gptel-agent-harness--mode-reminder-p text))
-                      (aset is-reminder i t)
-                      (setq last-reminder-idx i))))
-      ;; Find the start of the last contiguous batch of reminders.
-      (let ((batch-start (if (>= last-reminder-idx 0)
-                             (let ((s last-reminder-idx))
-                               (while (and (> s 0) (aref is-reminder (1- s)))
-                                 (cl-decf s))
-                               s)
-                           -1))
-            (prompts nil))
-        ;; Pass 2: collect user prompts, applying exclusion rules.
-        (cl-loop for i from 0 below (length messages)
-                 for msg = (aref messages i)
+      (let ((texts nil))
+        (cl-loop for msg in (append messages nil)
                  when (and (plistp msg)
                            (equal (plist-get msg :role) "user"))
                  do (let ((text (gptel-agent-harness--content-to-text
                                  (or (plist-get msg :content)
                                      (plist-get msg :parts)))))
-                      (when text
-                        (unless (or (string= text nudge)
-                                    (string-prefix-p header text)
-                                    (and (aref is-reminder i)
-                                         (not (and (>= i batch-start)
-                                                   (<= i last-reminder-idx)))))
-                          (push text prompts)))))
-        (nreverse prompts)))))
+                      (when text (push text texts))))
+        (gptel-agent-harness-commands--filter-user-prompts
+         (nreverse texts))))))
 
 (defun gptel-agent-harness--strip-compact-prefix ()
   "Strip the header and separator from current buffer, keeping the summary.
@@ -693,15 +615,52 @@ Call this after the LLM has written its summary into the buffer."
   (goto-char (point-max))
   (insert gptel-agent-harness-compact-separator))
 
-(defun gptel-agent-harness--salvage-buffer (fsm)
-  "Drop the incomplete round from FSM's buffer.
+(defun gptel-agent-harness--drop-current-round ()
+  "Delete the current (last) assistant round from the current buffer.
 
 Walks backward from `point-max' to find the start of the last
 assistant round (a contiguous block of response, tool-call, and
-ignore regions not followed by user text).  Deletes from there to
-`point-max', removing any partial response or incomplete tool round
-left by an abort or error so the next `gptel-send' starts from a
-clean conversation state.
+ignore regions not followed by user text) and deletes from there to
+`point-max'.  Return non-nil if a round was deleted, nil otherwise."
+  (save-excursion
+    ;; Walk backward from the end to find the start of the current
+    ;; (incomplete) round.  A round is a contiguous block of
+    ;; response/tool/ignore regions.  It ends (going backward) when
+    ;; we hit non-blank user text or buffer start.
+    (let ((pos (point-max))
+          (round-start nil))
+      (while (> pos (point-min))
+        (let* ((prev-end pos)
+               (prev-start (previous-single-property-change
+                            pos 'gptel nil (point-min)))
+               (val (get-text-property prev-start 'gptel)))
+          (if (or (eq val 'response)
+                  (eq val 'ignore)
+                  (and (consp val) (eq (car val) 'tool)))
+              ;; Part of the round — record as potential start
+              (progn
+                (setq round-start prev-start)
+                (setq pos prev-start))
+            ;; User text region — check if it's just blank
+            (let ((text (buffer-substring-no-properties
+                         prev-start prev-end)))
+              (if (string-blank-p text)
+                  ;; Blank user text between round regions — skip
+                  (progn
+                    (setq round-start prev-start)
+                    (setq pos prev-start))
+                ;; Real user text — the round starts after this
+                (setq pos (point-min)))))))
+      (when round-start
+        (delete-region round-start (point-max))
+        t))))
+
+(defun gptel-agent-harness--salvage-buffer (fsm)
+  "Drop the incomplete round from FSM's buffer.
+
+Deletes the last assistant round (a contiguous block of response,
+tool-call, and ignore regions not followed by user text) so the next
+`gptel-send' starts from a clean conversation state.
 
 Only acts on top-level agentic FSMs with a live buffer.  Does nothing
 when compaction is in progress (compaction handles its own cleanup)."
@@ -709,39 +668,9 @@ when compaction is in progress (compaction handles its own cleanup)."
              (gptel-agent-harness--top-level-p fsm))
     (gptel-agent-harness--with-fsm-buffer fsm
       (unless gptel-agent-harness--compacting-p
-        (save-excursion
-          ;; Walk backward from the end to find the start of the current
-          ;; (incomplete) round.  A round is a contiguous block of
-          ;; response/tool/ignore regions.  It ends (going backward) when
-          ;; we hit non-blank user text or buffer start.
-          (let ((pos (point-max))
-                (round-start nil))
-            (while (> pos (point-min))
-              (let* ((prev-end pos)
-                     (prev-start (previous-single-property-change
-                                  pos 'gptel nil (point-min)))
-                     (val (get-text-property prev-start 'gptel)))
-                (if (or (eq val 'response)
-                        (eq val 'ignore)
-                        (and (consp val) (eq (car val) 'tool)))
-                    ;; Part of the round — record as potential start
-                    (progn
-                      (setq round-start prev-start)
-                      (setq pos prev-start))
-                  ;; User text region — check if it's just blank
-                  (let ((text (buffer-substring-no-properties
-                               prev-start prev-end)))
-                    (if (string-blank-p text)
-                        ;; Blank user text between round regions — skip
-                        (progn
-                          (setq round-start prev-start)
-                          (setq pos prev-start))
-                      ;; Real user text — the round starts after this
-                      (setq pos (point-min)))))))
-            (when round-start
-              (delete-region round-start (point-max))
-              (when gptel-agent-harness-verbose
-                (message "gptel-agent-harness: salvaged buffer — dropped incomplete round")))))))))
+        (when (gptel-agent-harness--drop-current-round)
+          (when gptel-agent-harness-verbose
+            (message "gptel-agent-harness: salvaged buffer — dropped incomplete round")))))))
 
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
@@ -766,12 +695,8 @@ Return non-nil if compaction was initiated, nil otherwise."
         ;; Mark compaction in progress BEFORE aborting, so the terminal
         ;; transition handler won't nudge the aborted FSM back to life.
         (setq gptel-agent-harness--compacting-p t)
-        ;; Drop current round (last response onward).
-        (save-excursion
-          (goto-char (point-max))
-          (when-let* ((props (text-property-search-backward 'gptel 'response t))
-                      (resp-start (prop-match-beginning props)))
-            (delete-region resp-start (point-max))))
+        ;; Drop current round (last response/tool block onward).
+        (gptel-agent-harness--drop-current-round)
         ;; Abort current session.
         (gptel-abort buf)
         (gptel-agent-harness--strip-compact-prefix)
@@ -1097,12 +1022,8 @@ Also stores the raw (uncalibrated) estimate for calibration."
   (when (and (gptel-agent-harness--top-level-p fsm)
              ;; :data must be a plist (not a buffer during assembly)
              (not (bufferp (plist-get (gptel-fsm-info fsm) :data))))
-    (let* ((raw-estimate (gptel-agent-harness--context-tokens-from-data fsm))
-           (calibration (or (gptel-agent-harness--with-fsm-buffer fsm
-                              gptel-agent-harness--token-calibration)
-                            1.0))
-           (calibrated (* raw-estimate calibration))
-           (ratio (/ calibrated (float (gptel-agent-harness--context-window fsm)))))
+    (let ((raw-estimate (gptel-agent-harness--context-tokens-from-data fsm))
+          (ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
       (gptel-agent-harness--with-fsm-buffer fsm
         (setq gptel-agent-harness--context-ratio ratio)
         (setq gptel-agent-harness--last-raw-estimate raw-estimate)
