@@ -28,9 +28,8 @@
 ;; ERT tests for token estimation: CJK-aware counting, model/context
 ;; window lookup, per-backend payload estimation (OpenAI, Anthropic,
 ;; Gemini, reasoning/tool-call variants), calibration, and the content
-;; extractors (`--content-to-text', `--last-user-request',
-;; `--extract-content', `--extract-system-content'), including their
-;; malformed-data behavior.
+;; extractors (`--content-to-text', `--extract-content',
+;; `--extract-system-content'), including their malformed-data behavior.
 ;;
 ;; Part of the split suite in this directory; see
 ;; gptel-agent-harness-test.el for how to run it.
@@ -284,52 +283,6 @@ Covers plain string content (OpenAI-style) and a list of `:text' parts
 
 ;;;; Content Extractors
 
-(ert-deftest gptel-agent-harness-test-last-user-request ()
-  "Return the last non-nudge user message text across content shapes.
-Verifies plain strings, multimodal vector/list content, and Gemini
-\":parts\" content all reduce to an insertable plain string."
-  (gptel-agent-harness-test--with-buffer buf
-    ;; Plain string content: returns last non-nudge user message
-    (let* ((nudge-msg gptel-agent-harness-nudge-message)
-           (messages (vector
-                      (list :role "user" :content "request 1")
-                      (list :role "assistant" :content "reply 1")
-                      (list :role "user" :content nudge-msg)
-                      (list :role "assistant" :content "reply 2")
-                      (list :role "user" :content "request 2")))
-           (fsm (gptel-agent-harness-test--make-fsm buf
-                  :messages messages)))
-      (should (equal (gptel-agent-harness--last-user-request fsm)
-                     "request 2")))
-    ;; Only nudges → nil
-    (let* ((nudge-msg gptel-agent-harness-nudge-message)
-           (messages (vector
-                      (list :role "user" :content nudge-msg)
-                      (list :role "assistant" :content "reply")))
-           (fsm (gptel-agent-harness-test--make-fsm buf
-                  :messages messages)))
-      (should-not (gptel-agent-harness--last-user-request fsm)))
-    ;; Multimodal (OpenAI) vector content → text, ignoring image parts
-    (let* ((messages (vector
-                      (list :role "user"
-                            :content (vector '(:type "text" :text "describe ")
-                                             '(:type "image_url"
-                                               :image_url (:url "data:..."))
-                                             '(:type "text" :text "this image")))
-                      (list :role "assistant" :content "reply")))
-           (fsm (gptel-agent-harness-test--make-fsm buf :messages messages))
-           (req (gptel-agent-harness--last-user-request fsm)))
-      (should (stringp req))
-      (should (equal req "describe this image")))
-    ;; Gemini-style :contents with :parts and no :content
-    (let* ((messages (vector
-                      (list :role "user"
-                            :parts (vector '(:text "gemini question")))))
-           (fsm (gptel-agent-harness-test--make-fsm buf :contents messages))
-           (req (gptel-agent-harness--last-user-request fsm)))
-      (should (stringp req))
-      (should (equal req "gemini question")))))
-
 (ert-deftest gptel-agent-harness-test-content-to-text ()
   "Test `--content-to-text' reduces multimodal content to plain text."
   ;; Plain string passes through
@@ -387,24 +340,6 @@ Verifies plain strings, multimodal vector/list content, and Gemini
                                            :content nil
                                            :tool_calls "str")))))
         (should (integerp (gptel-agent-harness--context-tokens-from-data fsm)))))))
-
-(ert-deftest gptel-agent-harness-test-last-user-request-malformed ()
-  "`--last-user-request' returns nil on malformed data, never signals."
-  (gptel-agent-harness-test--with-buffer buf
-    ;; Non-plist :data → nil
-    (let* ((fsm (gptel-agent-harness-test--make-fsm buf
-                  :messages (vector (list :role "user" :content "hi"))))
-           (info (gptel-fsm-info fsm)))
-      (plist-put info :data "oops")
-      (should-not (gptel-agent-harness--last-user-request fsm)))
-    ;; :messages as a list → nil
-    (let ((fsm (gptel-agent-harness-test--make-fsm buf
-                 :messages (list (list :role "user" :content "hi")))))
-      (should-not (gptel-agent-harness--last-user-request fsm)))
-    ;; :messages vector with non-plist entries → nil, no error
-    (let ((fsm (gptel-agent-harness-test--make-fsm buf
-                 :messages (vector "raw" 42))))
-      (should-not (gptel-agent-harness--last-user-request fsm)))))
 
 (ert-deftest gptel-agent-harness-test-extract-content-malformed ()
   "Content extractors never signal on malformed parts."
