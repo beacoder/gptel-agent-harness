@@ -93,12 +93,13 @@ Covers:
                     (should-not (string-match-p "Assistant first response" captured-content))
                     ;; User prompt IS in the input (no header to strip on first time)
                     (should (string-match-p "User prompt" captured-content))
-                    ;; Resume layout: header + summary + separator + last request
+                    ;; Resume layout: header + summary + separator + all user prompts
                     (let ((content (buffer-string)))
                       (should (string-match-p "\\`\\*\\*\\[Compacted Summary\\]\\*\\*"
                                               content))
                       (should (string-match-p "Summary after 1st compaction" content))
                       (should (string-match-p "\n\n---\n\n" content))
+                      (should (string-match-p "req1" content))
                       (should (string-match-p "req2" content))
                       (should gptel-send-called)))
 
@@ -323,6 +324,339 @@ Covers:
               (gptel-agent-harness-commands-compact)
               (should (equal captured-system "local prompt")))))
       (delete-file prompt-file))))
+
+;;;; User Prompt Texts Extraction Tests
+
+(ert-deftest gptel-agent-harness-test-user-prompt-texts-basic ()
+  "Test `--user-prompt-texts' extracts user messages excluding nudges."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((nudge gptel-agent-harness-nudge-message)
+             (tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector
+                              (list :role "user" :content "first request")
+                              (list :role "assistant" :content "response")
+                              (list :role "user" :content nudge)
+                              (list :role "assistant" :content "nudged")
+                              (list :role "user" :content "second request"))))
+             (prompts (gptel-agent-harness--user-prompt-texts fsm)))
+        (should (equal prompts '("first request" "second request")))))))
+
+(ert-deftest gptel-agent-harness-test-user-prompt-texts-excludes-compact-frame ()
+  "Test `--user-prompt-texts' excludes old compacted summary frames."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector
+                              (list :role "user" :content
+                                    (concat gptel-agent-harness-compact-header
+                                            "old summary"
+                                            gptel-agent-harness-compact-separator))
+                              (list :role "user" :content "real request"))))
+             (prompts (gptel-agent-harness--user-prompt-texts fsm)))
+        (should (equal prompts '("real request")))))))
+
+(ert-deftest gptel-agent-harness-test-user-prompt-texts-mode-reminders ()
+  "Test `--user-prompt-texts' excludes stale mode reminders but keeps latest batch."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (old-reminder "<system-reminder>\nOLD plan mode\n</system-reminder>")
+             (new-reminder "<system-reminder>\nNEW build mode\n</system-reminder>")
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector
+                              (list :role "user" :content "request 1")
+                              (list :role "user" :content old-reminder)
+                              (list :role "assistant" :content "response")
+                              (list :role "user" :content "request 2")
+                              (list :role "user" :content new-reminder)
+                              (list :role "user" :content "request 3"))))
+             (prompts (gptel-agent-harness--user-prompt-texts fsm)))
+        ;; Old reminder excluded, new reminder kept, all real prompts kept
+        (should (member "request 1" prompts))
+        (should (member "request 2" prompts))
+        (should (member "request 3" prompts))
+        (should (member new-reminder prompts))
+        (should-not (member old-reminder prompts))))))
+
+(ert-deftest gptel-agent-harness-test-user-prompt-texts-plan-exit-notice ()
+  "Test `--user-prompt-texts' treats plan-exit approved message as mode reminder."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (plan-exit (format gptel-agent-harness-tools-plan-exit-approved-message
+                                "/tmp/PLAN.md"))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector
+                              (list :role "user" :content "request")
+                              (list :role "user" :content plan-exit))))
+             (prompts (gptel-agent-harness--user-prompt-texts fsm)))
+        ;; Plan-exit is the latest (only) reminder batch — kept
+        (should (member plan-exit prompts))
+        (should (member "request" prompts))))))
+
+(ert-deftest gptel-agent-harness-test-compaction-restores-all-prompts ()
+  "Test that automatic compaction restores ALL user prompts, not just the last."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n")
+        (gptel-agent-harness-verbose nil))
+    (let ((prompt-file (make-temp-file "compact-prompt-" nil ".txt" "test")))
+      (unwind-protect
+          (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+            (gptel-agent-harness-test--with-buffer buf
+              (with-current-buffer buf
+                (gptel-agent-harness-test--setup-gptel-buffer buf)
+                (setq-local gptel-agent-harness--compacting-p nil)
+                (let* ((tools (vector (list :type "function"
+                                            :function (list :name "test"))))
+                       (fsm (gptel-agent-harness-test--make-fsm buf
+                              :handlers gptel-send--handlers
+                              :tools tools
+                              :messages (vector
+                                         (list :role "user" :content "first task")
+                                         (list :role "assistant" :content "done")
+                                         (list :role "user" :content "second task")
+                                         (list :role "assistant" :content "ok")
+                                         (list :role "user" :content "third task")))))
+                  (insert "buffer text\n")
+                  (let ((r-start (point)))
+                    (insert "response")
+                    (put-text-property r-start (point) 'gptel 'response))
+                  (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                             (lambda (callback)
+                               (erase-buffer)
+                               (insert "Summary.\n")
+                               (when (functionp callback) (funcall callback nil))))
+                            ((symbol-function 'gptel-send) (lambda () nil)))
+                    (gptel-agent-harness--compact fsm)
+                    (let ((content (buffer-string)))
+                      (should (string-match-p "first task" content))
+                      (should (string-match-p "second task" content))
+                      (should (string-match-p "third task" content))))))))
+        (delete-file prompt-file)))))
+
+;;;; Manual Compact Buffer — User Prompts Restoration Tests
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-restores-user-prompts ()
+  "Test `compact-buffer' restores user prompts from buffer text."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n")
+        (prompt-file (make-temp-file "compact-" nil ".txt" "prompt")))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+          (gptel-agent-harness-test--with-buffer buf
+            (with-current-buffer buf
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-harness--compacting-p nil)
+              ;; Build buffer: user1 → response1 → user2 → response2
+              (insert "fix the typo\n")
+              (let ((r-start (point)))
+                (insert "Fixed.\n")
+                (put-text-property r-start (point) 'gptel 'response))
+              (insert "add tests\n")
+              (let ((r-start (point)))
+                (insert "Tests added.\n")
+                (put-text-property r-start (point) 'gptel 'response))
+              (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                         (lambda (callback)
+                           (erase-buffer)
+                           (insert "Summary of work.\n")
+                           (when (functionp callback) (funcall callback nil)))))
+                (gptel-agent-harness-commands-compact-buffer)
+                (let ((content (buffer-string)))
+                  (should (string-match-p "fix the typo" content))
+                  (should (string-match-p "add tests" content))
+                  (should (string-match-p "Summary of work" content))
+                  (should-not gptel-agent-harness--compacting-p))))))
+      (delete-file prompt-file))))
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-excludes-nudges ()
+  "Test `compact-buffer' excludes nudge messages from restored prompts."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n")
+        (prompt-file (make-temp-file "compact-" nil ".txt" "prompt")))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+          (gptel-agent-harness-test--with-buffer buf
+            (with-current-buffer buf
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-harness--compacting-p nil)
+              (insert "real request\n")
+              (let ((r-start (point)))
+                (insert "response\n")
+                (put-text-property r-start (point) 'gptel 'response))
+              ;; Nudge text as user region
+              (insert gptel-agent-harness-nudge-message)
+              (insert "\n")
+              (let ((r-start (point)))
+                (insert "nudged response\n")
+                (put-text-property r-start (point) 'gptel 'response))
+              (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                         (lambda (callback)
+                           (erase-buffer)
+                           (insert "Summary.\n")
+                           (when (functionp callback) (funcall callback nil)))))
+                (gptel-agent-harness-commands-compact-buffer)
+                (let ((content (buffer-string)))
+                  (should (string-match-p "real request" content))
+                  (should-not (string-match-p "Review the original" content)))))))
+      (delete-file prompt-file))))
+
+;;;; Salvage Buffer Tests
+
+(ert-deftest gptel-agent-harness-test-salvage-partial-response ()
+  "Test `--salvage-buffer' removes a partial response at buffer end."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (insert "user request\n")
+      (let ((r-start (point)))
+        (insert "partial respon")
+        (put-text-property r-start (point) 'gptel 'response))
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        (should (string-match-p "user request" (buffer-string)))
+        (should-not (string-match-p "partial respon" (buffer-string)))))))
+
+(ert-deftest gptel-agent-harness-test-salvage-response-with-tool-block ()
+  "Test `--salvage-buffer' removes entire round including tool blocks."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (insert "fix the bug\n")
+      ;; Response
+      (let ((r-start (point)))
+        (insert "Let me read.\n")
+        (put-text-property r-start (point) 'gptel 'response))
+      ;; Tool fence
+      (let ((f-start (point)))
+        (insert "``` tool (Read)\n")
+        (put-text-property f-start (point) 'gptel 'ignore))
+      ;; Tool body
+      (let ((t-start (point)))
+        (insert "(:name \"Read\" :args (:path \"f.ts\"))\n\nresult")
+        (put-text-property t-start (point) 'gptel '(tool . "call_1")))
+      ;; Tool fence close
+      (let ((f-start (point)))
+        (insert "\n```\n")
+        (put-text-property f-start (point) 'gptel 'ignore))
+      ;; Partial continuation
+      (let ((r-start (point)))
+        (insert "Now I'll fi")
+        (put-text-property r-start (point) 'gptel 'response))
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        (should (string-match-p "fix the bug" (buffer-string)))
+        (should-not (string-match-p "Let me read" (buffer-string)))
+        (should-not (string-match-p "Read" (buffer-string)))
+        (should-not (string-match-p "Now I'll fi" (buffer-string)))))))
+
+(ert-deftest gptel-agent-harness-test-salvage-preserves-complete-round ()
+  "Test `--salvage-buffer' does NOT remove a round followed by user text."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (insert "first request\n")
+      (let ((r-start (point)))
+        (insert "complete response\n")
+        (put-text-property r-start (point) 'gptel 'response))
+      (insert "next user request\n")
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        ;; Nothing should be removed — complete round
+        (should (string-match-p "complete response" (buffer-string)))
+        (should (string-match-p "next user request" (buffer-string)))))))
+
+(ert-deftest gptel-agent-harness-test-salvage-multi-round ()
+  "Test `--salvage-buffer' only removes the last incomplete round."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      ;; Complete first round
+      (insert "first request\n")
+      (let ((r-start (point)))
+        (insert "first response\n")
+        (put-text-property r-start (point) 'gptel 'response))
+      ;; Second request + incomplete round
+      (insert "second request\n")
+      (let ((r-start (point)))
+        (insert "partial second")
+        (put-text-property r-start (point) 'gptel 'response))
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        ;; First round intact
+        (should (string-match-p "first request" (buffer-string)))
+        (should (string-match-p "first response" (buffer-string)))
+        ;; Second request preserved (user text before incomplete round)
+        (should (string-match-p "second request" (buffer-string)))
+        ;; Second response removed
+        (should-not (string-match-p "partial second" (buffer-string)))))))
+
+(ert-deftest gptel-agent-harness-test-salvage-skips-non-agentic ()
+  "Test `--salvage-buffer' does nothing for non-agentic FSMs."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (insert "user text\n")
+      (let ((r-start (point)))
+        (insert "partial")
+        (put-text-property r-start (point) 'gptel 'response))
+      ;; No tools → not agentic
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :handlers gptel-send--handlers
+                   :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        ;; Nothing removed — non-agentic
+        (should (string-match-p "partial" (buffer-string)))))))
+
+(ert-deftest gptel-agent-harness-test-salvage-skips-during-compaction ()
+  "Test `--salvage-buffer' does nothing when compaction is in progress."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (setq-local gptel-agent-harness--compacting-p t)
+      (insert "user text\n")
+      (let ((r-start (point)))
+        (insert "partial")
+        (put-text-property r-start (point) 'gptel 'response))
+      (let* ((tools (vector (list :type "function" :function (list :name "t"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :messages (vector (list :role "user" :content "x")))))
+        (gptel-agent-harness--salvage-buffer fsm)
+        ;; Nothing removed — compaction handles its own cleanup
+        (should (string-match-p "partial" (buffer-string)))))))
 
 (provide 'gptel-agent-harness-test-compaction)
 
