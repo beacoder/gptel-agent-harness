@@ -43,7 +43,7 @@
 (require 'ert)
 (require 'cl-lib)
 
-(defcustom gptel-agent-harness-coverage-minimum 75
+(defcustom gptel-agent-harness-coverage-minimum 90
   "Minimum required test coverage percentage.
 Raise this as more coverage is added."
   :type 'integer
