@@ -271,24 +271,17 @@ See `gptel-agent-harness--model-name' for the model resolution."
      ;; fallback to 128000.
      128000)))
 
-(defun gptel-agent-harness--cjk-char-p (c)
-  "Return non-nil if C is a CJK or full-width character."
-  (or (and (>= c #x3000) (<= c #x9fff))    ; CJK + kana + punctuation
-      (and (>= c #xf900) (<= c #xfaff))    ; CJK compat ideographs
-      (and (>= c #xff00) (<= c #xffef))    ; full-width forms
-      (and (>= c #x20000) (<= c #x2fa1f)))) ; CJK extensions B–F
-
 (defun gptel-agent-harness--estimate-tokens (start end)
   "Estimate tokens between START and END.
 Uses:
 - Latin: ~4 chars/token
 - CJK/full-width: ~2 chars/token"
-  (let* ((text (buffer-substring-no-properties start end))
-         (len (length text))
-         (cjk-count 0))
-    (dotimes (i len)
-      (when (gptel-agent-harness--cjk-char-p (aref text i))
-        (setq cjk-count (1+ cjk-count))))
+  (let* ((len (- end start))
+         (bmp (count-matches "[\u3000-\u9fff\uF900-\uFAFF\uFF00-\uFFEF]"
+                             start end))
+         (supp (count-matches (concat (string #x20000) "-" (string #x2FA1F))
+                              start end))
+         (cjk-count (+ bmp supp)))
     (round (+ (/ (float (- len cjk-count)) 4.0)
               (/ (float cjk-count) 2.0)))))
 
