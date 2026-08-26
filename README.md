@@ -145,7 +145,6 @@ Keybindings are optional:
 ## Project Layout
 
 ```text
-site-lisp/
 ├── gptel-agent-harness.el           # Core supervision and context management
 ├── gptel-agent-harness-fsm.el       # FSM hardening
 ├── gptel-agent-harness-session.el   # Session persistence and restore
@@ -154,7 +153,8 @@ site-lisp/
 ├── gptel-agent-harness-commands.el  # Built-in and custom commands
 ├── prompts/                          # Prompt templates
 │   └── commands/                     # Custom command prompts
-└── agents/                           # Agent definitions
+├── agents/                           # Agent definitions
+└── tests/                            # ERT test suite
 ```
 
 ## Requirements
