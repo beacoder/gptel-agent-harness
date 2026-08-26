@@ -25,9 +25,10 @@
 
 ;;; Commentary:
 ;;
-;; File-level test coverage for gptel-agent-harness.  A source file is
-;; considered covered when its feature was loaded by the test suite, so
-;; a source file that no test requires lowers the measured coverage.
+;; Function-level test coverage for gptel-agent-harness.  Every
+;; top-level function defined in the source files is instrumented
+;; with a `:before' advice; a function counts as covered when the
+;; test suite calls it at least once.
 ;;
 ;; Batch usage:
 ;;   Emacs -Q -L . -L tests -batch \
@@ -43,8 +44,8 @@
 (require 'ert)
 (require 'cl-lib)
 
-(defcustom gptel-agent-harness-coverage-minimum 90
-  "Minimum required test coverage percentage.
+(defcustom gptel-agent-harness-coverage-minimum 70
+  "Minimum required function-level test coverage percentage.
 Raise this as more coverage is added."
   :type 'integer
   :group 'gptel-agent-harness)
@@ -58,6 +59,9 @@ Raise this as more coverage is added."
   "ERT stats accessors for the running Emacs version.
 Emacs 29 renamed the internal `ert--stats-*' accessors to the
 public `ert-stats-*' names; pick whichever exists.")
+
+(defvar gptel-agent-harness-coverage--instrumented nil
+  "List of (FILE . FUNCTION) pairs for instrumented functions.")
 
 (defun gptel-agent-harness-coverage--source-directory ()
   "Return the harness source directory."
@@ -73,40 +77,83 @@ public `ert-stats-*' names; pick whichever exists.")
    (directory-files (gptel-agent-harness-coverage--source-directory)
                     nil "\\.el$")))
 
-(defun gptel-agent-harness-coverage--covered-source-files ()
-  "Return source files whose feature was loaded by the test suite."
-  (cl-remove-if-not
-   (lambda (f)
-     (let ((feature (intern
-                     (file-name-sans-extension (file-name-nondirectory f)))))
-       (featurep feature)))
-   (gptel-agent-harness-coverage--collect-source-files)))
+(defun gptel-agent-harness-coverage--top-level-functions (file)
+  "Return the list of function symbols defined at top level in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let ((defs nil))
+      (condition-case nil
+          (while t
+            (forward-comment (point-max))
+            (let ((form (read (current-buffer))))
+              (when (and (consp form)
+                         (eq (car form) 'defun)
+                         (symbolp (cadr form)))
+                (push (cadr form) defs))))
+        (end-of-file nil))
+      (nreverse defs))))
+
+(defun gptel-agent-harness-coverage--instrument ()
+  "Add a `:before' advice to every top-level function in the source files.
+Records each instrumented function in
+`gptel-agent-harness-coverage--instrumented' and marks a function
+as covered the first time it is called."
+  (dolist (file (gptel-agent-harness-coverage--collect-source-files))
+    (dolist (fn (gptel-agent-harness-coverage--top-level-functions file))
+      (when (fboundp fn)
+        (push (cons file fn) gptel-agent-harness-coverage--instrumented)
+        (let ((target fn))
+          (advice-add fn :before
+                      (lambda (&rest _)
+                        (put target 'gptel-agent-harness-coverage-called t))))))))
+
+(defun gptel-agent-harness-coverage--covered-p (entry)
+  "Return non-nil if the function in ENTRY was called."
+  (get (cdr entry) 'gptel-agent-harness-coverage-called))
 
 (defun gptel-agent-harness-coverage--generate-report (output-file)
   "Generate coverage report and save to OUTPUT-FILE.
 Returns t if coverage passes the threshold, nil otherwise."
-  (let* ((all-files (gptel-agent-harness-coverage--collect-source-files))
-         (covered-files (gptel-agent-harness-coverage--covered-source-files))
-         (total-count (length all-files))
-         (covered-count (length covered-files))
+  (let* ((by-file
+          (seq-group-by (lambda (entry) (car entry))
+                        gptel-agent-harness-coverage--instrumented))
+         (file-names (mapcar #'car by-file))
+         (total (length gptel-agent-harness-coverage--instrumented))
+         (covered (cl-count-if #'gptel-agent-harness-coverage--covered-p
+                               gptel-agent-harness-coverage--instrumented))
+         (uncovered (cl-remove-if #'gptel-agent-harness-coverage--covered-p
+                                  gptel-agent-harness-coverage--instrumented))
          (coverage-percent
-          (if (= total-count 0)
+          (if (= total 0)
               100
-            (round (* 100.0 (/ covered-count (float total-count))))))
-         (passes-p (>= coverage-percent gptel-agent-harness-coverage-minimum)))
+            (round (* 100.0 (/ covered (float total))))))
+         (passes-p (>= coverage-percent
+                       gptel-agent-harness-coverage-minimum)))
     (with-temp-buffer
       (insert "=== gptel-agent-harness Coverage Report ===\n")
-      (insert (format "Total source files: %d\n" total-count))
-      (insert (format "Covered files: %d\n" covered-count))
+      (insert (format "Total instrumented functions: %d\n" total))
+      (insert (format "Covered functions: %d\n" covered))
       (insert (format "Coverage: %d%%\n" coverage-percent))
-      (insert "\n--- Covered Files ---\n")
-      (dolist (f covered-files)
-        (insert (format "%s\n" f)))
-      (insert "\n--- Uncovered Files ---\n")
-      (dolist (f (cl-set-difference all-files covered-files :test #'string=))
-        (insert (format "%s\n" f)))
+      (insert "\n--- Per-File Coverage ---\n")
+      (dolist (file (sort file-names #'string<))
+        (let* ((entries (cdr (assoc file by-file)))
+               (file-total (length entries))
+               (file-covered (cl-count-if #'gptel-agent-harness-coverage--covered-p
+                                          entries)))
+          (insert (format "%s: %d/%d (%d%%)\n"
+                          file file-covered file-total
+                          (if (= file-total 0)
+                              100
+                            (round (* 100.0 (/ file-covered
+                                                (float file-total)))))))))
+      (insert "\n--- Uncovered Functions ---\n")
+      (dolist (entry (sort uncovered
+                           (lambda (a b) (string< (car a) (car b)))))
+        (insert (format "%s (%s)\n" (cdr entry) (car entry))))
       (insert "\n")
-      (insert (format "Threshold: %d%%\n" gptel-agent-harness-coverage-minimum))
+      (insert (format "Threshold: %d%%\n"
+                      gptel-agent-harness-coverage-minimum))
       (insert (if passes-p
                   "Status: PASS\n"
                 "Status: FAIL - Coverage below threshold\n"))
@@ -117,6 +164,7 @@ Returns t if coverage passes the threshold, nil otherwise."
   "Run the ERT suite and write a coverage report to OUTPUT-FILE.
 Exit with status 0 when all tests pass and coverage meets the
 threshold; exit with status 1 otherwise."
+  (gptel-agent-harness-coverage--instrument)
   (let* ((result (ert-run-tests-batch "^gptel-agent-harness"))
          (accessors gptel-agent-harness-coverage--stats-accessors)
          (total (funcall (nth 0 accessors) result))
