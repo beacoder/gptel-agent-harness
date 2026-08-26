@@ -693,6 +693,56 @@ Call this after the LLM has written its summary into the buffer."
   (goto-char (point-max))
   (insert gptel-agent-harness-compact-separator))
 
+(defun gptel-agent-harness--salvage-buffer (fsm)
+  "Drop the incomplete round from FSM's buffer.
+
+Walks backward from `point-max' to find the start of the last
+assistant round (a contiguous block of response, tool-call, and
+ignore regions not followed by user text).  Deletes from there to
+`point-max', removing any partial response or incomplete tool round
+left by an abort or error so the next `gptel-send' starts from a
+clean conversation state.
+
+Only acts on top-level agentic FSMs with a live buffer.  Does nothing
+when compaction is in progress (compaction handles its own cleanup)."
+  (when (and (gptel-agent-harness--agentic-p fsm)
+             (gptel-agent-harness--top-level-p fsm))
+    (gptel-agent-harness--with-fsm-buffer fsm
+      (unless gptel-agent-harness--compacting-p
+        (save-excursion
+          ;; Walk backward from the end to find the start of the current
+          ;; (incomplete) round.  A round is a contiguous block of
+          ;; response/tool/ignore regions.  It ends (going backward) when
+          ;; we hit non-blank user text or buffer start.
+          (let ((pos (point-max))
+                (round-start nil))
+            (while (> pos (point-min))
+              (let* ((prev-end pos)
+                     (prev-start (previous-single-property-change
+                                  pos 'gptel nil (point-min)))
+                     (val (get-text-property prev-start 'gptel)))
+                (if (or (eq val 'response)
+                        (eq val 'ignore)
+                        (and (consp val) (eq (car val) 'tool)))
+                    ;; Part of the round — record as potential start
+                    (progn
+                      (setq round-start prev-start)
+                      (setq pos prev-start))
+                  ;; User text region — check if it's just blank
+                  (let ((text (buffer-substring-no-properties
+                               prev-start prev-end)))
+                    (if (string-blank-p text)
+                        ;; Blank user text between round regions — skip
+                        (progn
+                          (setq round-start prev-start)
+                          (setq pos prev-start))
+                      ;; Real user text — the round starts after this
+                      (setq pos (point-min)))))))
+            (when round-start
+              (delete-region round-start (point-max))
+              (when gptel-agent-harness-verbose
+                (message "gptel-agent-harness: salvaged buffer — dropped incomplete round")))))))))
+
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
 Drops the current round, aborts the session, calls `compact-buffer'
@@ -1109,6 +1159,9 @@ Either nudges the LLM to keep going (redirecting to WAIT) or lets
 the FSM terminate.  When compaction is in progress, always lets the
 FSM terminate without interference.
 
+On ERRS (error), drops the incomplete round from the buffer via
+`gptel-agent-harness--salvage-buffer' so the next send starts clean.
+
 ORIG-FN is the original `gptel--fsm-transition' function.
 MACHINE is the FSM machine state.
 NEW-STATE is the state to transition to."
@@ -1134,7 +1187,13 @@ NEW-STATE is the state to transition to."
           ;; with its original state.  ORIG-FN is called exactly once.
           (if nudged
               (funcall orig-fn machine 'WAIT)
+            ;; Nudge failed or not applicable — salvage on ERRS.
+            (when (eq (or new-state (gptel--fsm-next machine)) 'ERRS)
+              (gptel-agent-harness--salvage-buffer machine))
             (funcall orig-fn machine new-state)))
+      ;; Can't nudge — salvage on ERRS before terminating.
+      (when (eq (or new-state (gptel--fsm-next machine)) 'ERRS)
+        (gptel-agent-harness--salvage-buffer machine))
       (funcall orig-fn machine new-state))))
 
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
@@ -1157,6 +1216,10 @@ NEW-STATE is the optional new state to transition to."
       ;; LLM attempts to finish — possibly nudge instead
       ((guard (gptel-agent-harness--terminal-p target))
        (gptel-agent-harness--handle-terminal-state orig-fn machine new-state))
+      ;; User abort — salvage the buffer before terminating
+      ('ABRT
+       (gptel-agent-harness--salvage-buffer machine)
+       (funcall orig-fn machine new-state))
       ;; Tool execution means real progress
       ((or 'TOOL 'TPRE)
        (funcall orig-fn machine new-state)
