@@ -153,23 +153,74 @@ Returns the FSM object for the compaction request."
     fsm))
 
 
-(declare-function gptel-agent-harness--mode-reminder-p "gptel-agent-harness")
+(defun gptel-agent-harness--mode-reminder-p (text)
+  "Return non-nil if TEXT is a harness-injected plan/build mode reminder.
+Mode reminders start with `<system-reminder>' or match the
+plan-exit approved message template."
+  (or (string-prefix-p "<system-reminder>" text)
+      (gptel-agent-harness--plan-exit-notice-p text)))
+
+(defun gptel-agent-harness--plan-exit-notice-p (text)
+  "Return non-nil if TEXT matches the plan-exit approved message template."
+  (let ((template gptel-agent-harness-tools-plan-exit-approved-message))
+    (if (not (string-match-p "%s" template))
+        (string= text template)
+      (let* ((parts (split-string template "%s" t))
+             (prefix (car parts))
+             (suffix (cadr parts)))
+        (and (string-prefix-p prefix text)
+             (or (null suffix) (string-suffix-p suffix text)))))))
+
+(defun gptel-agent-harness-commands--filter-user-prompts (texts)
+  "Return the kept user messages from TEXTS, oldest first.
+TEXTS is a list of user prompt strings in chronological order.
+The kept messages exclude nudges, compacted summary frames, and
+stale mode reminders (see below).
+
+Excludes:
+- nudge messages (completion supervision, not user input)
+- previously compacted summary frames (old harness artifacts)
+- stale mode reminders (only the most recent contiguous batch is kept)
+
+The most recent batch of mode reminders IS preserved because it
+represents the current mode state (plan vs build).  Dropping all
+of them would leave the model unsure which mode is active."
+  (let* ((nudge gptel-agent-harness-nudge-message)
+         (header gptel-agent-harness-compact-header)
+         (is-reminder (mapcar (lambda (text)
+                                (gptel-agent-harness--mode-reminder-p text))
+                              texts))
+         (last-reminder-idx
+          (cl-loop for i downfrom (1- (length is-reminder)) to 0
+                   when (nth i is-reminder) return i
+                   finally return -1))
+         (batch-start (if (>= last-reminder-idx 0)
+                          (let ((s last-reminder-idx))
+                            (while (and (> s 0) (nth (1- s) is-reminder))
+                              (cl-decf s))
+                            s)
+                        -1))
+         (prompts nil))
+    (cl-loop for i from 0
+             for text in texts
+             unless (or (string= text nudge)
+                        (string-prefix-p header text)
+                        (and (nth i is-reminder)
+                             (not (and (>= i batch-start)
+                                       (<= i last-reminder-idx)))))
+             do (push text prompts))
+    (nreverse prompts)))
 
 (defun gptel-agent-harness-commands--buffer-user-prompts ()
   "Extract all user prompt texts from the current buffer.
 
 Scans text property boundaries to find user text regions (those
 not marked with `gptel' property value `response'), then applies
-the same exclusion rules as `gptel-agent-harness--user-prompt-texts':
-- nudge messages
-- old compacted summary frames
-- stale mode reminders (only the latest contiguous batch is kept)
+the shared exclusion rules of
+`gptel-agent-harness-commands--filter-user-prompts'.
 
 Returns a list of non-empty user prompt strings, oldest first."
-  (let ((nudge gptel-agent-harness-nudge-message)
-        (header gptel-agent-harness-compact-header)
-        (raw-texts nil))
-    ;; Pass 1: extract all user text regions from buffer.
+  (let ((raw-texts nil))
     (save-excursion
       (goto-char (point-min))
       (let ((pos (point-min)))
@@ -183,32 +234,8 @@ Returns a list of non-empty user prompt strings, oldest first."
                 (unless (string-empty-p text)
                   (push text raw-texts))))
             (setq pos next-change)))))
-    (setq raw-texts (nreverse raw-texts))
-    ;; Pass 2: classify reminders and find the last batch.
-    (let* ((is-reminder (mapcar (lambda (text)
-                                  (gptel-agent-harness--mode-reminder-p text))
-                                raw-texts))
-           (last-reminder-idx
-            (cl-loop for i downfrom (1- (length is-reminder)) to 0
-                     when (nth i is-reminder) return i
-                     finally return -1))
-           (batch-start (if (>= last-reminder-idx 0)
-                            (let ((s last-reminder-idx))
-                              (while (and (> s 0) (nth (1- s) is-reminder))
-                                (cl-decf s))
-                              s)
-                          -1))
-           (prompts nil))
-      ;; Pass 3: filter out excluded messages.
-      (cl-loop for i from 0
-               for text in raw-texts
-               unless (or (string= text nudge)
-                          (string-prefix-p header text)
-                          (and (nth i is-reminder)
-                               (not (and (>= i batch-start)
-                                         (<= i last-reminder-idx)))))
-               do (push text prompts))
-      (nreverse prompts))))
+    (gptel-agent-harness-commands--filter-user-prompts
+     (nreverse raw-texts))))
 
 ;;;###autoload
 (defun gptel-agent-harness-commands-compact-buffer ()
