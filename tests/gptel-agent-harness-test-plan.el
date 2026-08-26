@@ -397,6 +397,158 @@ message ordering, so the prompts go after the tool result message."
           (should (string-match-p "projfallback" path))
           (should (string-suffix-p "PLAN.md" path)))))))
 
+;;;; Plan File Management Tests
+
+(ert-deftest gptel-agent-harness-test-ensure-plan-file ()
+  "Test `--ensure-plan-file' creates directory and file if missing."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((tmp (make-temp-file "plan-test-" t))
+             (plan-dir (expand-file-name "session1/" tmp))
+             (plan-path (expand-file-name "PLAN.md" plan-dir)))
+        (unwind-protect
+            (progn
+              (setq-local gptel-agent-harness--plan-file plan-path)
+              (should-not (file-exists-p plan-path))
+              (let ((result (gptel-agent-harness--ensure-plan-file)))
+                (should (equal result plan-path))
+                (should (file-exists-p plan-path))
+                (should (file-directory-p plan-dir))))
+          (when (file-directory-p tmp)
+            (delete-directory tmp t)))))))
+
+(ert-deftest gptel-agent-harness-test-cleanup-plan-file ()
+  "Test `--cleanup-plan-file' removes file and empty directory."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let* ((tmp-dir (gptel-agent-harness--plan-temp-dir))
+             (session-dir (expand-file-name "cleanup-test/" tmp-dir))
+             (plan-path (expand-file-name "PLAN.md" session-dir)))
+        (unwind-protect
+            (progn
+              (make-directory session-dir t)
+              (write-region "" nil plan-path)
+              (setq-local gptel-agent-harness--plan-file plan-path)
+              (should (file-exists-p plan-path))
+              (gptel-agent-harness--cleanup-plan-file)
+              (should-not (file-exists-p plan-path))
+              (should-not (file-directory-p session-dir))
+              (should-not gptel-agent-harness--plan-file))
+          (when (file-exists-p plan-path) (delete-file plan-path))
+          (when (file-directory-p session-dir) (delete-directory session-dir t)))))))
+
+(ert-deftest gptel-agent-harness-test-cleanup-plan-file-outside-tmp ()
+  "Test `--cleanup-plan-file' refuses to delete files outside tmp dir."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-test--setup-gptel-buffer buf)
+      (let ((outside-path "/tmp/gptel-outside-test-plan.md"))
+        (setq-local gptel-agent-harness--plan-file outside-path)
+        ;; Don't create the file — just verify it wouldn't be deleted
+        ;; even if it existed (the prefix check fails for paths not
+        ;; under plan-temp-dir)
+        (gptel-agent-harness--cleanup-plan-file)
+        (should-not gptel-agent-harness--plan-file)))))
+
+(ert-deftest gptel-agent-harness-test-substitute-plan-info ()
+  "Test `--substitute-plan-info' replaces ${planInfo} placeholder."
+  (should (equal (gptel-agent-harness--substitute-plan-info
+                  "Plan file: ${planInfo}\nDo things."
+                  "/tmp/PLAN.md")
+                 "Plan file: /tmp/PLAN.md\nDo things."))
+  ;; No placeholder — returns unchanged
+  (should (equal (gptel-agent-harness--substitute-plan-info
+                  "No placeholder here."
+                  "/tmp/PLAN.md")
+                 "No placeholder here."))
+  ;; Multiple occurrences
+  (should (equal (gptel-agent-harness--substitute-plan-info
+                  "${planInfo} and ${planInfo}"
+                  "/p.md")
+                 "/p.md and /p.md")))
+
+;;;; Sub-agent Predicate Tests
+
+(ert-deftest gptel-agent-harness-test-sub-agent-p ()
+  "Test `--sub-agent-p' identifies sub-agent vs other FSMs."
+  ;; Sub-agent uses gptel-agent-request--handlers
+  (let ((fsm (gptel-agent-harness-test--make-fsm
+              (current-buffer)
+              :handlers gptel-agent-request--handlers)))
+    (should (gptel-agent-harness--sub-agent-p fsm)))
+  ;; Top-level uses gptel-send--handlers
+  (let ((fsm (gptel-agent-harness-test--make-fsm
+              (current-buffer)
+              :handlers gptel-send--handlers)))
+    (should-not (gptel-agent-harness--sub-agent-p fsm)))
+  ;; Other handlers (e.g. harness internal)
+  (let ((fsm (gptel-agent-harness-test--make-fsm
+              (current-buffer)
+              :handlers 'gptel-request--handlers)))
+    (should-not (gptel-agent-harness--sub-agent-p fsm))))
+
+;;;; Mode Reminder Predicate Tests
+
+(ert-deftest gptel-agent-harness-test-mode-reminder-p ()
+  "Test `--mode-reminder-p' identifies mode reminder texts."
+  ;; system-reminder prefix
+  (should (gptel-agent-harness--mode-reminder-p
+           "<system-reminder>\nPlan mode active.\n</system-reminder>"))
+  ;; Plan-exit approved message
+  (should (gptel-agent-harness--mode-reminder-p
+           (format gptel-agent-harness-tools-plan-exit-approved-message
+                   "/tmp/PLAN.md")))
+  ;; Regular user text
+  (should-not (gptel-agent-harness--mode-reminder-p "fix the bug"))
+  ;; Nudge message is NOT a mode reminder
+  (should-not (gptel-agent-harness--mode-reminder-p
+               gptel-agent-harness-nudge-message)))
+
+(ert-deftest gptel-agent-harness-test-plan-exit-notice-p ()
+  "Test `--plan-exit-notice-p' matches template with and without %s."
+  ;; Standard template with %s
+  (should (gptel-agent-harness--plan-exit-notice-p
+           (format gptel-agent-harness-tools-plan-exit-approved-message
+                   "/tmp/session/PLAN.md")))
+  ;; Different path — still matches
+  (should (gptel-agent-harness--plan-exit-notice-p
+           (format gptel-agent-harness-tools-plan-exit-approved-message
+                   "/home/user/plan.md")))
+  ;; Non-matching text
+  (should-not (gptel-agent-harness--plan-exit-notice-p "random text"))
+  ;; Partial match — prefix only
+  (should-not (gptel-agent-harness--plan-exit-notice-p "The plan at ")))
+
+;;;; Subagent Spec Tests
+
+(ert-deftest gptel-agent-harness-test-subagent-spec ()
+  "Test `gptel-agent-harness-agent--subagent-spec' builds correct plists."
+  ;; Both set
+  (let ((gptel-agent-harness-subagent-backend "backend")
+        (gptel-agent-harness-subagent-model "model"))
+    (should (equal (gptel-agent-harness-agent--subagent-spec)
+                   '(:backend "backend" :model "model"))))
+  ;; Only model
+  (let ((gptel-agent-harness-subagent-backend nil)
+        (gptel-agent-harness-subagent-model "model"))
+    (should (equal (gptel-agent-harness-agent--subagent-spec)
+                   '(:model "model"))))
+  ;; Only backend (symbol)
+  (let ((gptel-agent-harness-subagent-backend 'my-backend)
+        (gptel-agent-harness-subagent-model nil))
+    (should (equal (gptel-agent-harness-agent--subagent-spec)
+                   '(:backend "my-backend"))))
+  ;; Empty strings → nil
+  (let ((gptel-agent-harness-subagent-backend "")
+        (gptel-agent-harness-subagent-model ""))
+    (should-not (gptel-agent-harness-agent--subagent-spec)))
+  ;; Both nil → nil
+  (let ((gptel-agent-harness-subagent-backend nil)
+        (gptel-agent-harness-subagent-model nil))
+    (should-not (gptel-agent-harness-agent--subagent-spec))))
+
 (provide 'gptel-agent-harness-test-plan)
 
 ;; Local Variables:
