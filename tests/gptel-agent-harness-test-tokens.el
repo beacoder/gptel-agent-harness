@@ -52,7 +52,13 @@
     (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 2)))
   (with-temp-buffer
     (insert "hello   你好世界")  ; 8 latin + 4 CJK → 2+2=4
-    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 4))))
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 4)))
+  (with-temp-buffer
+    (insert (string #x20000 #x20001 #x2FA1F))  ; 3 CJK ext B–F → 2 tokens
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 2)))
+  (with-temp-buffer
+    (insert "ab" (string #x20000))  ; 2 latin + 1 ext CJK → 0.5+0.5=1
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 1))))
 
 ;;;; Model / Context Window Tests
 
