@@ -279,7 +279,7 @@ Uses:
   (let* ((len (- end start))
          (bmp (count-matches "[\u3000-\u9fff\uF900-\uFAFF\uFF00-\uFFEF]"
                              start end))
-         (supp (count-matches (concat (string #x20000) "-" (string #x2FA1F))
+         (supp (count-matches (concat "[" (string #x20000) "-" (string #x2FA1F) "]")
                               start end))
          (cjk-count (+ bmp supp)))
     (round (+ (/ (float (- len cjk-count)) 4.0)
