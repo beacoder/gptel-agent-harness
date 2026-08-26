@@ -11,7 +11,7 @@ FILES = gptel-agent-harness.el \
 	gptel-agent-harness-session.el \
 	gptel-agent-harness-tools.el \
 	gptel-agent-harness-config.el \
-	gptel-agent-harness-fsm-helpers.el \
+	gptel-agent-harness-fsm.el \
 	gptel-agent-harness-display.el \
 	gptel-agent-harness-supervisor.el \
 	gptel-agent-harness-compact.el \

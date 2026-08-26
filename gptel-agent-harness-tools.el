@@ -369,7 +369,7 @@ Returns the user's answers as quoted key-value pairs, one per line."
 ;;;; PlanExit Tool — request approval to leave plan mode
 
 ;; Forward declarations — defined in gptel-agent-harness-supervisor.el
-;; and gptel-agent-harness-fsm-helpers.el, which are loaded before this
+;; and gptel-agent-harness-fsm.el, which are loaded before this
 ;; file via gptel-agent-harness.el.  All are resolved at call time.
 (declare-function gptel-agent-harness-set-mode "gptel-agent-harness-supervisor" (mode))
 (defvar gptel-agent-harness--mode)

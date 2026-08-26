@@ -31,7 +31,7 @@
 (require 'gptel-agent)
 (require 'format-spec)
 (require 'gptel-agent-harness-config)
-(require 'gptel-agent-harness-fsm-helpers)
+(require 'gptel-agent-harness-fsm)
 (require 'gptel-agent-harness-compact)
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)

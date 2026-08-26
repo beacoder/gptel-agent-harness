@@ -34,7 +34,7 @@
 ;; modules, each in its own file:
 ;;
 ;; - gptel-agent-harness-config.el      — user options and prompt files
-;; - gptel-agent-harness-fsm-helpers.el — FSM helpers, internal state, token estimation
+;; - gptel-agent-harness-fsm.el — FSM hardening advice and helpers
 ;; - gptel-agent-harness-compact.el     — automatic context compaction
 ;; - gptel-agent-harness-display.el     — mode-line display, token calibration, context rules
 ;; - gptel-agent-harness-supervisor.el  — FSM supervisor, build/plan mode
@@ -48,7 +48,7 @@
 
 (require 'gptel-agent)
 (require 'gptel-agent-harness-config)
-(require 'gptel-agent-harness-fsm-helpers)
+(require 'gptel-agent-harness-fsm)
 (require 'gptel-agent-harness-compact)
 (require 'gptel-agent-harness-display)
 (require 'gptel-agent-harness-supervisor)
@@ -74,12 +74,11 @@ Provides completion and context supervision."
       (progn
         ;; Global setup — module enables that need no buffer context.
         (gptel-agent-harness-config-enable)
-        (gptel-agent-harness-fsm-helpers-enable)
+        (gptel-agent-harness-fsm-enable)
         (gptel-agent-harness-compact-enable)
         (gptel-agent-harness-commands-enable)
         (gptel-agent-harness-tools-enable)
         (gptel-agent-harness-agent-enable)
-        (gptel-agent-harness-fsm-enable)
         (gptel-agent-harness-supervisor-enable)
         (when (boundp 'gptel-mode-map)
           (define-key gptel-mode-map (kbd "C-c C-k") #'gptel-abort))
@@ -98,7 +97,7 @@ Provides completion and context supervision."
           (message "gptel-agent-harness enabled")))
     ;; disable
     (gptel-agent-harness-config-disable)
-    (gptel-agent-harness-fsm-helpers-disable)
+    (gptel-agent-harness-fsm-disable)
     (gptel-agent-harness-compact-disable)
     (gptel-agent-harness-commands-disable)
     (gptel-agent-harness-tools-disable)

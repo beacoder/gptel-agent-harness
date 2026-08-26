@@ -41,7 +41,7 @@
 (defvar gptel-agent-harness-compact-header)
 (declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness-config")
 
-;; Defined in gptel-agent-harness-fsm-helpers.el, loaded before this file.
+;; Defined in gptel-agent-harness-fsm.el, loaded before this file.
 (defvar gptel-agent-harness--nudge-count)
 
 (defun gptel-agent-harness-commands--run-post-funcs (info)
