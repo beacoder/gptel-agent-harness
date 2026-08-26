@@ -60,7 +60,7 @@ jobs:
           version: ${{ matrix.emacs-version }}
 
       # `make test-coverage` enforces the threshold via
-      # `gptel-agent-harness-coverage-minimum` (75%) and writes
+      # `gptel-agent-harness-coverage-minimum` (90%) and writes
       # coverage.txt, so an insufficiently-tested change fails this job.
       - name: Run tests with coverage
         run: |
