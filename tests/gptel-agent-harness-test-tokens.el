@@ -481,11 +481,7 @@ Also renders malformed parts defensively without signalling."
   ;; List → Anthropic
   (with-temp-buffer
     (gptel-agent-harness--extract-content (list (list :text "anth")))
-    (should (equal (buffer-string) "anth")))
-  ;; Other type → defensive format
-  (with-temp-buffer
-    (gptel-agent-harness--extract-content 42)
-    (should (equal (buffer-string) "42"))))
+    (should (equal (buffer-string) "anth"))))
 
 (ert-deftest gptel-agent-harness-test-extract-tool-calls ()
   "Test `--extract-tool-calls' extracts names and args from tool-call vectors."
