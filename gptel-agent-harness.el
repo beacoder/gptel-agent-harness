@@ -1015,8 +1015,12 @@ Also stores the raw (uncalibrated) estimate for calibration."
   (when (and (gptel-agent-harness--top-level-p fsm)
              ;; :data must be a plist (not a buffer during assembly)
              (not (bufferp (plist-get (gptel-fsm-info fsm) :data))))
-    (let ((raw-estimate (gptel-agent-harness--context-tokens-from-data fsm))
-          (ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
+    (let* ((raw-estimate (gptel-agent-harness--context-tokens-from-data fsm))
+           (calibration (or (gptel-agent-harness--with-fsm-buffer fsm
+                             gptel-agent-harness--token-calibration)
+                            1.0))
+           (ratio (/ (* raw-estimate calibration)
+                     (float (gptel-agent-harness--context-window fsm)))))
       (gptel-agent-harness--with-fsm-buffer fsm
         (setq gptel-agent-harness--context-ratio ratio)
         (setq gptel-agent-harness--last-raw-estimate raw-estimate)
