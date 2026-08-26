@@ -39,9 +39,9 @@
 (defvar gptel-agent-harness-compact-prompt-file)
 (defvar gptel-agent-harness-nudge-message)
 (defvar gptel-agent-harness-compact-header)
-(declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
+(declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness-config")
 
-;; Defined in gptel-agent-harness.el, loaded after this file.
+;; Defined in gptel-agent-harness-fsm-helpers.el, loaded before this file.
 (defvar gptel-agent-harness--nudge-count)
 
 (defun gptel-agent-harness-commands--run-post-funcs (info)
@@ -108,9 +108,9 @@ reports the error.  INFO is the request info plist."
       (message "Compaction failed: unexpected response type %S" (type-of resp))
       (gptel-agent-harness-commands--run-post-funcs info)))))
 
-(declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
+(declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness-compact")
 
-(declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness")
+(declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness-compact")
 
 (defun gptel-agent-harness-commands-compact (&optional post-func)
   "Compact the current buffer contents using the LLM.
@@ -659,6 +659,17 @@ region is active, uses region content instead of full buffer."
                                (gptel--update-status " Ready" 'success)
                              (message "Summary request failed: %s" (plist-get info :status))
                              (gptel--update-status " Failed" 'error)))))))))))
+
+;;;###autoload
+(defun gptel-agent-harness-commands-enable ()
+  "Enable harness commands for the current buffer.
+No-op: commands are loaded globally and need no per-buffer setup."
+  nil)
+
+(defun gptel-agent-harness-commands-disable ()
+  "Disable harness commands for the current buffer.
+No-op: commands are loaded globally and need no per-buffer teardown."
+  nil)
 
 (provide 'gptel-agent-harness-commands)
 

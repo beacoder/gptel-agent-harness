@@ -77,7 +77,7 @@
 (require 'gptel-agent)
 (require 'cl-lib)
 
-;; Silence byte-compiler — defined in gptel-agent-harness.el
+;; Silence byte-compiler — defined in gptel-agent-harness-config.el
 (defvar gptel-agent-harness-verbose)
 
 ;;;; U1 — normalize non-plist tool arguments

@@ -368,10 +368,10 @@ Returns the user's answers as quoted key-value pairs, one per line."
 
 ;;;; PlanExit Tool — request approval to leave plan mode
 
-;; Forward declarations — defined in gptel-agent-harness.el, which requires
-;; this file (so it cannot be required back).  All are resolved at call
-;; time, long after the main file has loaded.
-(declare-function gptel-agent-harness-set-mode "gptel-agent-harness" (mode))
+;; Forward declarations — defined in gptel-agent-harness-supervisor.el
+;; and gptel-agent-harness-fsm-helpers.el, which are loaded before this
+;; file via gptel-agent-harness.el.  All are resolved at call time.
+(declare-function gptel-agent-harness-set-mode "gptel-agent-harness-supervisor" (mode))
 (defvar gptel-agent-harness--mode)
 (defvar gptel-agent-harness--pending-prompts)
 (defvar gptel-agent-harness--plan-file)

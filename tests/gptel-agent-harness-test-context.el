@@ -208,7 +208,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
       (should (advice-member-p
                #'gptel-agent-harness--transition-advice
                'gptel--fsm-transition))
-      (should (memq #'gptel-agent-harness--setup-mode-line gptel-mode-hook))
+      (should (memq #'gptel-agent-harness-display-enable gptel-mode-hook))
       (with-current-buffer buf
         ;; Construct should be in mode-line-format or mode-line-misc-info
         (should (or (memq 'gptel-agent-harness--mode-line-construct
@@ -224,7 +224,7 @@ It must be a no-op for non-top-level FSMs or when :data is still a buffer."
       (should-not (advice-member-p
                    #'gptel-agent-harness--transition-advice
                    'gptel--fsm-transition))
-      (should-not (memq #'gptel-agent-harness--setup-mode-line gptel-mode-hook))
+      (should-not (memq #'gptel-agent-harness-display-enable gptel-mode-hook))
       (with-current-buffer buf
         (should-not (or (memq 'gptel-agent-harness--mode-line-construct
                               mode-line-format)

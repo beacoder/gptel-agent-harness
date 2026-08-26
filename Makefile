@@ -10,6 +10,11 @@ FILES = gptel-agent-harness.el \
 	gptel-agent-harness-commands.el \
 	gptel-agent-harness-session.el \
 	gptel-agent-harness-tools.el \
+	gptel-agent-harness-config.el \
+	gptel-agent-harness-fsm-helpers.el \
+	gptel-agent-harness-display.el \
+	gptel-agent-harness-supervisor.el \
+	gptel-agent-harness-compact.el \
 	tests/gptel-agent-harness-test.el \
 	tests/gptel-agent-harness-test-utils.el \
 	tests/gptel-agent-harness-test-tokens.el \

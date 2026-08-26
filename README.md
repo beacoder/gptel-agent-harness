@@ -145,7 +145,12 @@ Keybindings are optional:
 ## Project Layout
 
 ```text
-├── gptel-agent-harness.el           # Core supervision and context management
+├── gptel-agent-harness.el           # Entry point: minor mode + module wiring
+├── gptel-agent-harness-config.el    # User options and prompt files
+├── gptel-agent-harness-fsm-helpers.el # FSM helpers, internal state, token estimation
+├── gptel-agent-harness-compact.el   # Automatic context compaction
+├── gptel-agent-harness-display.el   # Mode-line display, token calibration, context rules
+├── gptel-agent-harness-supervisor.el # FSM supervisor, build/plan mode
 ├── gptel-agent-harness-fsm.el       # FSM hardening
 ├── gptel-agent-harness-session.el   # Session persistence and restore
 ├── gptel-agent-harness-tools.el     # Enhanced tools

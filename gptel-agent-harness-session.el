@@ -42,7 +42,7 @@
 (require 'gptel-agent-harness-agent)
 (require 'cl-lib)
 
-;; Defined in gptel-agent-harness.el, loaded after this file.
+;; Defined in gptel-agent-harness-config.el, loaded before this file.
 (defvar gptel-agent-harness-verbose)
 
 ;; gptel--known-backends is defined in gptel-request.el (loaded transitively via gptel).
@@ -516,6 +516,15 @@ Adds hook to `gptel-post-response-functions' buffer-locally."
   (remove-hook 'gptel-post-response-functions
                #'gptel-agent-harness--auto-save-session
                t))
+
+;;;###autoload
+(defun gptel-agent-harness-session-enable ()
+  "Enable session management in the current gptel buffer."
+  (gptel-agent-harness--setup-session))
+
+(defun gptel-agent-harness-session-disable ()
+  "Disable session management in the current gptel buffer."
+  (gptel-agent-harness--teardown-session))
 
 (provide 'gptel-agent-harness-session)
 ;;; gptel-agent-harness-session.el ends here

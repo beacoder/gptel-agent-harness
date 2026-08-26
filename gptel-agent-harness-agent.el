@@ -47,7 +47,7 @@
 ;; Silence byte-compiler — defined in gptel-agent.el
 (defvar gptel-agent--agents)
 
-;; Silence byte-compiler — defined in gptel-agent-harness.el
+;; Silence byte-compiler — defined in gptel-agent-harness-config.el
 (defvar gptel-agent-harness-verbose)
 
 ;;;; Internal State
