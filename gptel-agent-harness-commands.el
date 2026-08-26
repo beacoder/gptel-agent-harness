@@ -37,6 +37,8 @@
 ;;;; Context Compaction
 
 (defvar gptel-agent-harness-compact-prompt-file)
+(defvar gptel-agent-harness-nudge-message)
+(defvar gptel-agent-harness-compact-header)
 (declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
 
 ;; Defined in gptel-agent-harness.el, loaded after this file.
@@ -151,13 +153,72 @@ Returns the FSM object for the compaction request."
     fsm))
 
 
+(declare-function gptel-agent-harness--mode-reminder-p "gptel-agent-harness")
+
+(defun gptel-agent-harness-commands--buffer-user-prompts ()
+  "Extract all user prompt texts from the current buffer.
+
+Scans text property boundaries to find user text regions (those
+not marked with `gptel' property value `response'), then applies
+the same exclusion rules as `gptel-agent-harness--user-prompt-texts':
+- nudge messages
+- old compacted summary frames
+- stale mode reminders (only the latest contiguous batch is kept)
+
+Returns a list of non-empty user prompt strings, oldest first."
+  (let ((nudge gptel-agent-harness-nudge-message)
+        (header gptel-agent-harness-compact-header)
+        (raw-texts nil))
+    ;; Pass 1: extract all user text regions from buffer.
+    (save-excursion
+      (goto-char (point-min))
+      (let ((pos (point-min)))
+        (while (< pos (point-max))
+          (let* ((next-change (next-single-property-change pos 'gptel nil (point-max)))
+                 (prop-val (get-text-property pos 'gptel)))
+            ;; User text: no gptel property or gptel property is not 'response
+            (unless (eq prop-val 'response)
+              (let ((text (string-trim
+                           (buffer-substring-no-properties pos next-change))))
+                (unless (string-empty-p text)
+                  (push text raw-texts))))
+            (setq pos next-change)))))
+    (setq raw-texts (nreverse raw-texts))
+    ;; Pass 2: classify reminders and find the last batch.
+    (let* ((is-reminder (mapcar (lambda (text)
+                                  (gptel-agent-harness--mode-reminder-p text))
+                                raw-texts))
+           (last-reminder-idx
+            (cl-loop for i downfrom (1- (length is-reminder)) to 0
+                     when (nth i is-reminder) return i
+                     finally return -1))
+           (batch-start (if (>= last-reminder-idx 0)
+                            (let ((s last-reminder-idx))
+                              (while (and (> s 0) (nth (1- s) is-reminder))
+                                (cl-decf s))
+                              s)
+                          -1))
+           (prompts nil))
+      ;; Pass 3: filter out excluded messages.
+      (cl-loop for i from 0
+               for text in raw-texts
+               unless (or (string= text nudge)
+                          (string-prefix-p header text)
+                          (and (nth i is-reminder)
+                               (not (and (>= i batch-start)
+                                         (<= i last-reminder-idx)))))
+               do (push text prompts))
+      (nreverse prompts))))
+
 ;;;###autoload
 (defun gptel-agent-harness-commands-compact-buffer ()
   "Manually compact the current gptel buffer.
 
 Strips the compaction frame (header/separator), sends the buffer
 to the LLM for summarization, and rebuilds the buffer with the
-standard header/separator structure.
+standard header/separator structure.  All user prompts (excluding
+nudges and mode-switch messages) are restored after the summary
+frame, so the model retains the original requests.
 
 Use this when context is getting large and you want to compact
 without waiting for the automatic trigger."
@@ -166,28 +227,36 @@ without waiting for the automatic trigger."
     (user-error "Not in a gptel buffer"))
   (when (bound-and-true-p gptel-agent-harness--compacting-p)
     (user-error "Compaction already in progress"))
-  (setq-local gptel-agent-harness--compacting-p t)
-  ;; Strip header and separator, leaving old summary as plain text.
-  (gptel-agent-harness--strip-compact-prefix)
-  ;; Set compact prompt and send.
-  (setq-local gptel-agent-compact-prompt
-              (gptel-agent-harness--read-compact-prompt))
-  (let ((buf (current-buffer)))
-    (gptel-agent-harness-commands-compact
-     (lambda (&optional info)
-       (when (buffer-live-p buf)
-         (with-current-buffer buf
-           (kill-local-variable 'gptel-agent-compact-prompt)
-           (setq gptel-agent-harness--compacting-p nil)
-           ;; Reset nudge count so the post-compaction conversation starts
-           ;; with a fresh nudge budget, matching the automatic path.
-           (setq gptel-agent-harness--nudge-count 0)
-           (if (and info (plist-get info :error))
-               (message "Manual compaction failed: %s"
-                        (plist-get info :error))
-             ;; Success: add header + separator.
-             (gptel-agent-harness--insert-compact-frame)
-             (message "Buffer compacted successfully."))))))))
+  ;; Extract user prompts BEFORE stripping frame (frame text is excluded
+  ;; by the header-prefix check, so order doesn't matter, but doing it
+  ;; before strip ensures we see the full buffer).
+  (let ((prompts (gptel-agent-harness-commands--buffer-user-prompts)))
+    (setq-local gptel-agent-harness--compacting-p t)
+    ;; Strip header and separator, leaving old summary as plain text.
+    (gptel-agent-harness--strip-compact-prefix)
+    ;; Set compact prompt and send.
+    (setq-local gptel-agent-compact-prompt
+                (gptel-agent-harness--read-compact-prompt))
+    (let ((buf (current-buffer))
+          (resume-prompts prompts))
+      (gptel-agent-harness-commands-compact
+       (lambda (&optional info)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (kill-local-variable 'gptel-agent-compact-prompt)
+             (setq gptel-agent-harness--compacting-p nil)
+             ;; Reset nudge count so the post-compaction conversation starts
+             ;; with a fresh nudge budget, matching the automatic path.
+             (setq gptel-agent-harness--nudge-count 0)
+             (if (and info (plist-get info :error))
+                 (message "Manual compaction failed: %s"
+                          (plist-get info :error))
+               ;; Success: add header + separator + restored user prompts.
+               (gptel-agent-harness--insert-compact-frame)
+               (goto-char (point-max))
+               (dolist (prompt resume-prompts)
+                 (insert prompt "\n\n"))
+               (message "Buffer compacted successfully.")))))))))
 
 (defconst gptel-agent-harness-commands--summary-prompt-file
   (expand-file-name
