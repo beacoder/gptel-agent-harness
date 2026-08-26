@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        emacs-version: ["29.3", "30.1"]
+        emacs-version: ["29.3", "30.1", "snapshot"]
     steps:
       - uses: actions/checkout@v7
 
@@ -24,6 +24,10 @@ jobs:
       - name: Package lint
         run: |
           make package-lint
+
+      - name: Checkdoc
+        run: |
+          make checkdoc
 
   build:
     name: Byte compile (emacs${{ matrix.emacs-version }})
@@ -50,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        emacs-version: ["29.3", "30.1"]
+        emacs-version: ["29.3", "30.1", "snapshot"]
     steps:
       - uses: actions/checkout@v7
 
