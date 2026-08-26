@@ -591,6 +591,84 @@ the caller can safely `insert' the result."
                when (and text (not (equal text nudge)))
                return text))))
 
+(defun gptel-agent-harness--mode-reminder-p (text)
+  "Return non-nil if TEXT is a harness-injected plan/build mode reminder.
+Mode reminders start with `<system-reminder>' or match the
+plan-exit approved message template."
+  (or (string-prefix-p "<system-reminder>" text)
+      (gptel-agent-harness--plan-exit-notice-p text)))
+
+(defun gptel-agent-harness--plan-exit-notice-p (text)
+  "Return non-nil if TEXT matches the plan-exit approved message template."
+  (let ((template gptel-agent-harness-tools-plan-exit-approved-message))
+    (if (not (string-match-p "%s" template))
+        (string= text template)
+      (let* ((parts (split-string template "%s" t))
+             (prefix (car parts))
+             (suffix (cadr parts)))
+        (and (string-prefix-p prefix text)
+             (or (null suffix) (string-suffix-p suffix text)))))))
+
+(defun gptel-agent-harness--user-prompt-texts (fsm)
+  "Return all user prompt texts from FSM messages, oldest first.
+
+Excludes:
+- nudge messages (completion supervision, not user input)
+- previously compacted summary frames (old harness artifacts)
+- stale mode reminders (only the most recent contiguous batch is kept)
+
+The most recent batch of mode reminders IS preserved because it
+represents the current mode state (plan vs build).  Dropping all
+of them would leave the model unsure which mode is active."
+  (let* ((info (gptel-fsm-info fsm))
+         (data (plist-get info :data))
+         (messages (and (plistp data)
+                        (or (plist-get data :messages)
+                            (plist-get data :input)
+                            (plist-get data :contents))))
+         (nudge gptel-agent-harness-nudge-message)
+         (header gptel-agent-harness-compact-header)
+         is-reminder last-reminder-idx)
+    (when (vectorp messages)
+      ;; Pass 1: classify each message position as reminder or not,
+      ;; and find the last reminder index.
+      (setq is-reminder (make-vector (length messages) nil))
+      (setq last-reminder-idx -1)
+      (cl-loop for i from 0 below (length messages)
+               for msg = (aref messages i)
+               when (and (plistp msg)
+                         (equal (plist-get msg :role) "user"))
+               do (let ((text (gptel-agent-harness--content-to-text
+                               (or (plist-get msg :content)
+                                   (plist-get msg :parts)))))
+                    (when (and text (gptel-agent-harness--mode-reminder-p text))
+                      (aset is-reminder i t)
+                      (setq last-reminder-idx i))))
+      ;; Find the start of the last contiguous batch of reminders.
+      (let ((batch-start (if (>= last-reminder-idx 0)
+                             (let ((s last-reminder-idx))
+                               (while (and (> s 0) (aref is-reminder (1- s)))
+                                 (cl-decf s))
+                               s)
+                           -1))
+            (prompts nil))
+        ;; Pass 2: collect user prompts, applying exclusion rules.
+        (cl-loop for i from 0 below (length messages)
+                 for msg = (aref messages i)
+                 when (and (plistp msg)
+                           (equal (plist-get msg :role) "user"))
+                 do (let ((text (gptel-agent-harness--content-to-text
+                                 (or (plist-get msg :content)
+                                     (plist-get msg :parts)))))
+                      (when text
+                        (unless (or (string= text nudge)
+                                    (string-prefix-p header text)
+                                    (and (aref is-reminder i)
+                                         (not (and (>= i batch-start)
+                                                   (<= i last-reminder-idx)))))
+                          (push text prompts)))))
+        (nreverse prompts)))))
+
 (defun gptel-agent-harness--strip-compact-prefix ()
   "Strip the header and separator from current buffer, keeping the summary.
 If a previous compaction frame exists (header + summary + separator),
@@ -618,8 +696,8 @@ Call this after the LLM has written its summary into the buffer."
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
 Drops the current round, aborts the session, calls `compact-buffer'
-\(the proven manual compaction logic), then resumes with the recent
-user requests.
+\(the proven manual compaction logic), then resumes with all user
+prompts (excluding nudges and mode-switch messages) restored.
 Return non-nil if compaction was initiated, nil otherwise."
   (let ((buf (gptel-agent-harness--buffer fsm)))
     (unless (and buf (buffer-live-p buf))
@@ -627,10 +705,10 @@ Return non-nil if compaction was initiated, nil otherwise."
         (message "gptel-agent-harness: compact skipped — buffer not live"))
       (cl-return-from gptel-agent-harness--compact nil))
     (with-current-buffer buf
-      (let ((request (gptel-agent-harness--last-user-request fsm)))
-        (unless request
+      (let ((prompts (gptel-agent-harness--user-prompt-texts fsm)))
+        (unless prompts
           (when gptel-agent-harness-verbose
-            (message "gptel-agent-harness: compact skipped — no user request to resume"))
+            (message "gptel-agent-harness: compact skipped — no user prompts to resume"))
           (cl-return-from gptel-agent-harness--compact nil))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: compacting context %.1f%%"
@@ -650,7 +728,7 @@ Return non-nil if compaction was initiated, nil otherwise."
         (setq-local gptel-agent-compact-prompt
                     (gptel-agent-harness--read-compact-prompt))
         (let ((resume-buf buf)
-              (resume-request request))
+              (resume-prompts prompts))
           (condition-case err
               (gptel-agent-harness-commands-compact
                (lambda (&optional info)
@@ -663,12 +741,15 @@ Return non-nil if compaction was initiated, nil otherwise."
                            (setq gptel-agent-harness--compacting-p nil)
                            (when gptel-agent-harness-verbose
                              (message "gptel-agent-harness: compaction failed, not resuming")))
-                       ;; Success: insert frame + resume requests, then send.
+                       ;; Success: insert frame + all user prompts, then send.
                        (condition-case resume-err
                            (progn
                              (gptel-agent-harness--insert-compact-frame)
                              (goto-char (point-max))
-                             (insert resume-request "\n")
+                             ;; Insert all preserved user prompts, separated
+                             ;; by double newlines for readability.
+                             (dolist (prompt resume-prompts)
+                               (insert prompt "\n\n"))
                              ;; Clear compacting-p AFTER gptel-send returns, so
                              ;; the WAIT transition during send still sees the
                              ;; flag and won't re-trigger compaction.
