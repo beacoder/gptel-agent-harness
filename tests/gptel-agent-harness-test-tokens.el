@@ -477,6 +477,104 @@ Also renders malformed parts defensively without signalling."
                   (should (string-match-p "tools" (buffer-string))))))
           (kill-buffer "*gptel-agent-harness-debug*"))))))
 
+;;;; Content Extraction Tests
+
+(ert-deftest gptel-agent-harness-test-extract-content-openai ()
+  "Test `--extract-content-openai' inserts plain string."
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-openai "hello world")
+    (should (equal (buffer-string) "hello world"))))
+
+(ert-deftest gptel-agent-harness-test-extract-content-gemini ()
+  "Test `--extract-content-gemini' handles vector of parts."
+  ;; Text parts
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-gemini
+     (vector (list :text "hello ") (list :text "world")))
+    (should (equal (buffer-string) "hello world")))
+  ;; Thinking parts
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-gemini
+     (vector (list :thinking "deep thought")))
+    (should (equal (buffer-string) "deep thought")))
+  ;; Bare string parts
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-gemini
+     (vector "bare string"))
+    (should (equal (buffer-string) "bare string")))
+  ;; Non-plist fallback (defensive)
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-gemini (vector 42))
+    (should (equal (buffer-string) "42"))))
+
+(ert-deftest gptel-agent-harness-test-extract-content-anthropic ()
+  "Test `--extract-content-anthropic' handles list of parts."
+  ;; Text parts
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-anthropic
+     (list (list :text "hello ") (list :text "world")))
+    (should (equal (buffer-string) "hello world")))
+  ;; Thinking parts
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-anthropic
+     (list (list :thinking "thought")))
+    (should (equal (buffer-string) "thought")))
+  ;; Arguments parts (tool use input)
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-anthropic
+     (list (list :arguments "{\"path\":\"/tmp\"}")))
+    (should (equal (buffer-string) "{\"path\":\"/tmp\"}")))
+  ;; Bare string
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-anthropic (list "plain"))
+    (should (equal (buffer-string) "plain")))
+  ;; Non-plist fallback
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content-anthropic (list 99))
+    (should (equal (buffer-string) "99"))))
+
+(ert-deftest gptel-agent-harness-test-extract-content-dispatch ()
+  "Test `--extract-content' dispatches correctly by type."
+  ;; String → OpenAI
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content "text")
+    (should (equal (buffer-string) "text")))
+  ;; Vector → Gemini
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content (vector (list :text "gem")))
+    (should (equal (buffer-string) "gem")))
+  ;; List → Anthropic
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content (list (list :text "anth")))
+    (should (equal (buffer-string) "anth")))
+  ;; Other type → defensive format
+  (with-temp-buffer
+    (gptel-agent-harness--extract-content 42)
+    (should (equal (buffer-string) "42"))))
+
+(ert-deftest gptel-agent-harness-test-extract-tool-calls ()
+  "Test `--extract-tool-calls' extracts names and args from tool-call vectors."
+  ;; Vector of tool calls
+  (with-temp-buffer
+    (gptel-agent-harness--extract-tool-calls
+     (vector (list :function (list :name "ReadFile"
+                                   :arguments "{\"path\":\"/tmp/f.ts\"}"))))
+    (should (string-match-p "ReadFile" (buffer-string)))
+    (should (string-match-p "/tmp/f.ts" (buffer-string))))
+  ;; List of tool calls
+  (with-temp-buffer
+    (gptel-agent-harness--extract-tool-calls
+     (list (list :function (list :name "Write" :arguments "{}"))))
+    (should (string-match-p "Write" (buffer-string))))
+  ;; Nil or invalid — no error
+  (with-temp-buffer
+    (gptel-agent-harness--extract-tool-calls nil)
+    (should (equal (buffer-string) "")))
+  ;; Non-plist entry skipped
+  (with-temp-buffer
+    (gptel-agent-harness--extract-tool-calls (vector 42 "bad"))
+    (should (equal (buffer-string) ""))))
+
 (provide 'gptel-agent-harness-test-tokens)
 
 ;; Local Variables:
