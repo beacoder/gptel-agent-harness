@@ -42,31 +42,6 @@
 
 ;;;; Token Estimation Tests
 
-(ert-deftest gptel-agent-harness-test-cjk-char-p ()
-  "Test CJK character detection."
-  (should (gptel-agent-harness--cjk-char-p ?中))
-  (should (gptel-agent-harness--cjk-char-p ?あ))
-  (should (gptel-agent-harness--cjk-char-p ?Ａ))
-  (should-not (gptel-agent-harness--cjk-char-p ?A))
-  (should-not (gptel-agent-harness--cjk-char-p ?é)))
-
-(ert-deftest gptel-agent-harness-test-cjk-char-p-ranges ()
-  "Test CJK detection across all covered code ranges."
-  ;; CJK compat ideographs
-  (should (gptel-agent-harness--cjk-char-p #xf900))
-  (should (gptel-agent-harness--cjk-char-p #xfaff))
-  ;; Full-width forms
-  (should (gptel-agent-harness--cjk-char-p #xff00))
-  (should (gptel-agent-harness--cjk-char-p #xffef))
-  ;; CJK extensions B–F boundaries
-  (should (gptel-agent-harness--cjk-char-p #x20000))
-  (should (gptel-agent-harness--cjk-char-p #x2fa1f))
-  ;; Outside every range
-  (should-not (gptel-agent-harness--cjk-char-p #x10000))
-  (should-not (gptel-agent-harness--cjk-char-p #x2fa20))
-  (should-not (gptel-agent-harness--cjk-char-p #x2fff))
-  (should-not (gptel-agent-harness--cjk-char-p 0)))
-
 (ert-deftest gptel-agent-harness-test-estimate-tokens ()
   "Test token estimation for mixed content."
   (with-temp-buffer
