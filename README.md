@@ -120,7 +120,7 @@ Sessions are automatically saved after LLM responses and can be restored interac
 ### Bash tool
 
 The `Bash` tool overrides `gptel-agent`'s shell execution to bound both
-runtime and output size, mirroring the Python harness:
+runtime and output size:
 
 ```elisp
 ;; Kill a command that produces no output for this many seconds
