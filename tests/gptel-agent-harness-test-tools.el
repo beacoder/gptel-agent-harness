@@ -488,6 +488,40 @@ at most TIMEOUT seconds (default 30).  Signals an error on timeout."
     ;; A line from the discarded middle is gone.
     (should-not (string-match-p "line-050" out))))
 
+(ert-deftest gptel-agent-harness-test-bash-truncate-invariant ()
+  "The returned string never exceeds the max-output budget.
+This holds even when the tail lines are themselves very long."
+  (let ((gptel-agent-harness-bash-max-output-chars 200)
+        (gptel-agent-harness-bash-tail-lines 50))
+    ;; 50 lines of 100 chars each: the tail alone (5000 chars) dwarfs the
+    ;; 200-char budget, so the tail must be truncated to keep the invariant.
+    (let* ((lines (cl-loop for i from 1 to 50
+                           collect (format "line-%02d-%s" i (make-string 90 ?x))))
+           (text (string-join lines "\n"))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (<= (length out) gptel-agent-harness-bash-max-output-chars))
+      (should (string-match-p "truncated: output exceeded 200 chars" out)))
+    ;; A single enormous line also respects the budget.
+    (let* ((text (make-string 5000 ?y))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (<= (length out) gptel-agent-harness-bash-max-output-chars)))))
+
+(ert-deftest gptel-agent-harness-test-bash-truncate-preserves-empty-lines ()
+  "Blank lines are preserved, so the tail is the last N physical lines."
+  (let ((gptel-agent-harness-bash-max-output-chars 200)
+        (gptel-agent-harness-bash-tail-lines 3))
+    ;; 100 lines separated by blank lines (well over the 200-char budget);
+    ;; the last 3 physical lines are "l99", "" and "l100".
+    (let* ((lines (cl-loop for i from 1 to 100
+                           collect (format "l%d" i)))
+           (text (string-join lines "\n\n"))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (string-match-p "truncated: output exceeded 200 chars" out))
+      ;; The blank line between the last two kept lines is preserved.
+      (should (string-match-p "l99\n\nl100" out))
+      ;; A middle line is discarded.
+      (should-not (string-match-p "l50" out)))))
+
 ;;; Async execution — success and failure
 
 (ert-deftest gptel-agent-harness-test-bash-success-appends-exit-code ()
