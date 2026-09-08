@@ -43,18 +43,22 @@
 (ert-deftest gptel-agent-harness-test-tools-enable-disable-idempotent ()
   "Test tools enable/disable: overrides, restores, and idempotency."
   (let ((orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep)))
+        (orig-grep (symbol-function 'gptel-agent--grep))
+        (orig-bash (symbol-function 'gptel-agent--execute-bash)))
     (unwind-protect
         (progn
           (gptel-agent-harness-tools-enable)
-          ;; After enable, glob/grep should NOT be the originals
+          ;; After enable, glob/grep/bash should NOT be the originals
           (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
           (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          (should-not (eq (symbol-function 'gptel-agent--execute-bash) orig-bash))
           ;; The harness overrides are installed as advice
           (should (advice-member-p #'gptel-agent-harness-tools--glob
                                   'gptel-agent--glob))
           (should (advice-member-p #'gptel-agent-harness-tools--grep
                                   'gptel-agent--grep))
+          (should (advice-member-p #'gptel-agent-harness-tools--execute-bash
+                                  'gptel-agent--execute-bash))
           ;; Second enable is a no-op: advice-add does not double-install,
           ;; so a single disable still fully restores the originals.
           (gptel-agent-harness-tools-enable)
@@ -62,13 +66,17 @@
           (gptel-agent-harness-tools-disable)
           (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
           (should (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          (should (eq (symbol-function 'gptel-agent--execute-bash) orig-bash))
           (should-not (advice-member-p #'gptel-agent-harness-tools--glob
                                       'gptel-agent--glob))
           (should-not (advice-member-p #'gptel-agent-harness-tools--grep
-                                      'gptel-agent--grep)))
+                                      'gptel-agent--grep))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--execute-bash
+                                      'gptel-agent--execute-bash)))
       ;; Safety restore
       (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep))))
+      (fset 'gptel-agent--grep orig-grep)
+      (fset 'gptel-agent--execute-bash orig-bash))))
 
 ;;;; Question Tool Tests
 
@@ -427,6 +435,158 @@ tool unusable on machines without it."
     (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
       (should-error (gptel-agent-harness-tools--grep "alpha" temp-dir)
                     :type 'error))))
+
+;;;; Bash Tool Tests (gptel-agent-harness-tools--execute-bash / --truncate-bash)
+
+(defun gptel-agent-harness-test--run-bash (command &optional timeout)
+  "Run COMMAND via the harness Bash tool synchronously; return its output.
+
+Drives the asynchronous `gptel-agent-harness-tools--execute-bash' to
+completion by pumping the event loop until the callback fires, waiting
+at most TIMEOUT seconds (default 30).  Signals an error on timeout."
+  (let ((result nil)
+        (done nil)
+        (deadline (+ (float-time) (or timeout 30))))
+    (gptel-agent-harness-tools--execute-bash
+     (lambda (out) (setq result out done t))
+     command)
+    (while (and (not done) (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (unless done
+      (error "Bash test timed out waiting for callback"))
+    result))
+
+;;; Pure truncation helper
+
+(ert-deftest gptel-agent-harness-test-bash-truncate-short-unchanged ()
+  "Output within the char budget is returned unchanged."
+  (let ((gptel-agent-harness-bash-max-output-chars 1000)
+        (gptel-agent-harness-bash-tail-lines 50))
+    (should (equal (gptel-agent-harness-tools--truncate-bash "hello\nworld")
+                   "hello\nworld"))
+    ;; Exactly at the budget is still unchanged.
+    (let ((text (make-string 1000 ?x)))
+      (should (equal (gptel-agent-harness-tools--truncate-bash text) text)))))
+
+(ert-deftest gptel-agent-harness-test-bash-truncate-head-tail ()
+  "Oversized output keeps the head, a truncation notice, and the tail."
+  (let* ((gptel-agent-harness-bash-max-output-chars 200)
+         (gptel-agent-harness-bash-tail-lines 3)
+         ;; 100 numbered lines, well over the 200-char budget.
+         (lines (cl-loop for i from 1 to 100
+                         collect (format "line-%03d-padding-padding" i)))
+         (text (string-join lines "\n"))
+         (out (gptel-agent-harness-tools--truncate-bash text)))
+    ;; A truncation notice is inserted.
+    (should (string-match-p "truncated: output exceeded 200 chars" out))
+    ;; The head is preserved (first line present).
+    (should (string-match-p "line-001" out))
+    ;; The last 3 lines are preserved as the tail.
+    (should (string-match-p "line-098" out))
+    (should (string-match-p "line-099" out))
+    (should (string-match-p "line-100" out))
+    ;; A line from the discarded middle is gone.
+    (should-not (string-match-p "line-050" out))))
+
+;;; Async execution — success and failure
+
+(ert-deftest gptel-agent-harness-test-bash-success-appends-exit-code ()
+  "A successful command returns its output with `Exit code: 0' appended."
+  (let ((out (gptel-agent-harness-test--run-bash "echo hello")))
+    (should (equal out "hello\nExit code: 0"))))
+
+(ert-deftest gptel-agent-harness-test-bash-empty-output-success ()
+  "A successful command with no output returns just the exit-code line."
+  (let ((out (gptel-agent-harness-test--run-bash "true")))
+    (should (equal out "Exit code: 0"))))
+
+(ert-deftest gptel-agent-harness-test-bash-failure-reports-exit-code ()
+  "A failing command reports the non-zero exit code and its output."
+  (let ((out (gptel-agent-harness-test--run-bash "echo oops >&2; exit 7")))
+    (should (string-match-p "Command failed with exit code 7" out))
+    (should (string-match-p "oops" out))
+    (should (string-match-p "Exit code: 7" out))))
+
+(ert-deftest gptel-agent-harness-test-bash-merges-stderr ()
+  "Both stdout and stderr are captured (process merges them via the buffer)."
+  (let ((out (gptel-agent-harness-test--run-bash
+              "echo to-out; echo to-err >&2")))
+    (should (string-match-p "to-out" out))
+    (should (string-match-p "to-err" out))))
+
+;;; Async execution — truncation applies to real output
+
+(ert-deftest gptel-agent-harness-test-bash-truncates-large-output ()
+  "Oversized command output is truncated, with the exit code preserved."
+  (let ((gptel-agent-harness-bash-max-output-chars 500)
+        (gptel-agent-harness-bash-tail-lines 5))
+    (let ((out (gptel-agent-harness-test--run-bash
+                "for i in $(seq 1 500); do echo padded-line-$i; done")))
+      (should (string-match-p "truncated: output exceeded 500 chars" out))
+      ;; Exit-code marker still present despite truncation.
+      (should (string-match-p "Exit code: 0" out))
+      ;; The final line survives in the tail.
+      (should (string-match-p "padded-line-500" out)))))
+
+;;; Async execution — timeouts
+
+(ert-deftest gptel-agent-harness-test-bash-silence-timeout ()
+  "A command that produces no output past the silence window is killed."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash "sleep 30" 15)))
+      (should (string-match-p "timed out" out))
+      (should (string-match-p "no output for 1s" out)))))
+
+(ert-deftest gptel-agent-harness-test-bash-max-timeout ()
+  "A command exceeding the max runtime is killed even while producing output."
+  (let ((gptel-agent-harness-bash-timeout-silence nil)
+        (gptel-agent-harness-bash-timeout-max 1)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash
+                ;; Keeps emitting output so only the max timeout can fire.
+                "while true; do echo tick; sleep 0.2; done" 15)))
+      (should (string-match-p "timed out" out))
+      (should (string-match-p "exceeded the 1s maximum" out)))))
+
+(ert-deftest gptel-agent-harness-test-bash-no-timeout-when-disabled ()
+  "With both timeouts disabled, a quick command completes normally."
+  (let ((gptel-agent-harness-bash-timeout-silence nil)
+        (gptel-agent-harness-bash-timeout-max nil))
+    (let ((out (gptel-agent-harness-test--run-bash "echo ok")))
+      (should (equal out "ok\nExit code: 0")))))
+
+(ert-deftest gptel-agent-harness-test-bash-silence-timeout-is-prompt ()
+  "The silence timeout fires promptly via continuous polling.
+It must not wait on a fixed multi-second interval: with a 1s window
+and sub-second polling, a silent command is reported well under 3s of
+wall-clock time."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let* ((t0 (float-time))
+           (out (gptel-agent-harness-test--run-bash "sleep 30" 10))
+           (elapsed (- (float-time) t0)))
+      (should (string-match-p "no output for 1s" out))
+      ;; 1s window + a little slack for graceful-kill/poll; the old
+      ;; single-shot 5s timer would blow past this.
+      (should (< elapsed 3.0)))))
+
+(ert-deftest gptel-agent-harness-test-bash-empty-timeout-no-leading-blank ()
+  "A silent (no-output) timeout returns just the error, no leading blanks.
+This matches the Python harness `_timeout_message', which omits the
+`\\n\\n' separator when there is no output."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash "sleep 30" 10)))
+      (should (equal out "Error: Bash command timed out (no output for 1s)."))
+      (should-not (string-prefix-p "\n" out)))))
 
 (provide 'gptel-agent-harness-test-tools)
 
