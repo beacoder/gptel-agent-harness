@@ -70,14 +70,12 @@ last `gptel-agent-harness-bash-tail-lines' lines, discarding the middle.")
 (defvar gptel-agent-harness-bash-poll-interval 0.2
   "Seconds between Bash timeout checks.
 The timeout watcher runs on a repeating timer at this interval, so
-silence/max timeouts fire within roughly this latency of the deadline
-\(mirroring the poll loop of the Python harness Bash tool).")
+silence/max timeouts fire within roughly this latency of the deadline.")
 
 (defvar gptel-agent-harness-bash-kill-grace 2
   "Seconds to wait after SIGTERM before escalating to SIGKILL.
 On a timeout the process is asked to terminate gracefully (SIGTERM);
-if it is still alive after this many seconds it is killed (SIGKILL),
-mirroring the Python harness Bash tool's graceful escalation.")
+if it is still alive after this many seconds it is killed (SIGKILL).")
 
 (defun gptel-agent-harness-tools--truncate-bash (text)
   "Return TEXT truncated to head+tail within the max-output budget.
@@ -85,8 +83,8 @@ mirroring the Python harness Bash tool's graceful escalation.")
 Uses `gptel-agent-harness-bash-max-output-chars' as the budget.
 
 Keeps the first part of the output and the last
-`gptel-agent-harness-bash-tail-lines' lines, discarding the middle,
-mirroring the Python harness Bash tool.  The returned string is always
+`gptel-agent-harness-bash-tail-lines' lines, discarding the middle.
+The returned string is always
 no longer than `gptel-agent-harness-bash-max-output-chars': the tail may
 claim at most half the budget, and if it would exceed that it is
 truncated from the front (keeping the most recent output) so the
@@ -146,8 +144,8 @@ CALLBACK is called with the assembled output string when the process
 finishes (or is killed by a timeout).
 
 Override of `gptel-agent--execute-bash'.  Adds a silence/max timeout
-and head+tail truncation of oversized output, mirroring the Python
-harness Bash tool.  A repeating watcher (every
+and head+tail truncation of oversized output.
+A repeating watcher (every
 `gptel-agent-harness-bash-poll-interval' seconds) checks the deadlines,
 so a timeout fires promptly rather than at a fixed interval; on timeout
 the process is terminated gracefully (SIGTERM, then SIGKILL after
