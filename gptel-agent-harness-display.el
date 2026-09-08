@@ -147,6 +147,7 @@ Adds hook to `gptel-post-response-functions' buffer-locally."
 No-op when the file is missing or `gptel-add-file' is unavailable.
 Adding is idempotent (`gptel-add-file' dedupes by path)."
   (when (and (file-exists-p gptel-agent-harness-task-completion-rules-file)
+             (require 'gptel-context nil t)
              (fboundp 'gptel-add-file))
     (gptel-add-file gptel-agent-harness-task-completion-rules-file)
     (when gptel-agent-harness-verbose
