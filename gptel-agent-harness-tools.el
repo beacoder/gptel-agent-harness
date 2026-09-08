@@ -84,21 +84,32 @@ mirroring the Python harness Bash tool's graceful escalation.")
 
 Uses `gptel-agent-harness-bash-max-output-chars' as the budget.
 
-Keeps the first MAX chars and the last TAIL lines, discarding the
-middle, mirroring the Python harness Bash tool.  Returns TEXT unchanged
-when it fits within the budget."
+Keeps the first part of the output and the last
+`gptel-agent-harness-bash-tail-lines' lines, discarding the middle,
+mirroring the Python harness Bash tool.  The returned string is always
+no longer than `gptel-agent-harness-bash-max-output-chars': the tail may
+claim at most half the budget, and if it would exceed that it is
+truncated from the front (keeping the most recent output) so the
+invariant holds.  Returns TEXT unchanged when it fits within the budget."
   (let ((max-chars gptel-agent-harness-bash-max-output-chars)
         (tail-lines gptel-agent-harness-bash-tail-lines))
     (if (<= (length text) max-chars)
         text
-      (let* ((lines (split-string text "\n" t))
+      (let* ((lines (split-string text "\n" nil))
              (n (length lines))
              (tail (if (<= n tail-lines)
                        lines
                      (nthcdr (- n tail-lines) lines)))
              (notice (format "... [truncated: output exceeded %d chars] ..." max-chars))
-             (tail-text (string-join tail "\n"))
+             ;; Fixed cost of the notice plus the two "\n\n" separators.
              (budget (max 0 (- max-chars (length notice) 4)))
+             ;; The tail may claim at most half the budget; the head gets
+             ;; whatever is left after the (possibly truncated) tail.
+             (tail-budget (floor budget 2))
+             (tail-text (let ((joined (string-join tail "\n")))
+                          (if (> (length joined) tail-budget)
+                              (substring joined (- (length joined) tail-budget))
+                            joined)))
              (head-budget (max 0 (- budget (length tail-text))))
              (head (substring text 0 (min head-budget (length text)))))
         (concat head "\n\n" notice
