@@ -22,7 +22,7 @@ For a standalone Python implementation of the same core ideas, see [`python-agen
 * **Completion supervision** — Nudges the agent to verify task completion instead of stopping prematurely.
 * **Context management** — Tracks context usage, calibrates token estimates from API counts, and automatically compacts long conversations.
 * **Session persistence** — Automatically saves sessions, generates titles, and restores previous sessions with a live preview.
-* **Enhanced tools** — Git-aware `Glob` and `Grep`, interactive `Question`, and `PlanExit` tools.
+* **Enhanced tools** — Git-aware `Glob` and `Grep`, a `Bash` tool with output truncation and idle/max timeouts, interactive `Question`, and `PlanExit` tools.
 * **Plan / Build modes** — Use a read-only planning phase before allowing code changes.
 * **OpenCode agent** — Provides an OpenCode-like coding-agent experience through `gptel-opencode-agent`.
 * **Sub-agent models** — Run delegated sub-agent work with a separate, cheaper model.
@@ -116,6 +116,34 @@ Model context windows can be extended with:
 ```
 
 Sessions are automatically saved after LLM responses and can be restored interactively.
+
+### Bash tool
+
+The `Bash` tool overrides `gptel-agent`'s shell execution to bound both
+runtime and output size, mirroring the Python harness:
+
+```elisp
+;; Kill a command that produces no output for this many seconds
+;; (nil disables). Default: 120.
+(setq gptel-agent-harness-bash-timeout-silence 120)
+
+;; Cap on total runtime in seconds (nil disables). Default: nil.
+(setq gptel-agent-harness-bash-timeout-max nil)
+
+;; Truncate oversized output to the first N chars plus the last
+;; `-tail-lines' lines, discarding the middle. Default: 20000.
+(setq gptel-agent-harness-bash-max-output-chars 20000)
+
+;; Trailing lines kept when output is truncated. Default: 50.
+(setq gptel-agent-harness-bash-tail-lines 50)
+```
+
+On a timeout the process is terminated gracefully (SIGTERM, then
+SIGKILL after `gptel-agent-harness-bash-kill-grace' seconds, default 2).
+Deadlines are checked on a repeating watcher every
+`gptel-agent-harness-bash-poll-interval' seconds (default 0.2), so a
+timeout fires promptly. The exit code is always appended as the last
+line so it survives truncation.
 
 ### Sub-agents
 
