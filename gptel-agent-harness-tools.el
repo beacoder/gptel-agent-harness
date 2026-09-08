@@ -49,6 +49,178 @@
   '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert" "Edit" "Write" "Mkdir" "Bash" "Skill" "Question")
   "Default tool names for `gptel-agent-harness-commands-initialize' and `-review'.")
 
+;;;; Bash Tool — head+tail truncation + timeout
+
+(defvar gptel-agent-harness-bash-timeout-silence 120
+  "Kill a Bash command that produces no output for this many seconds.
+Nil disables the silence timeout.")
+
+(defvar gptel-agent-harness-bash-timeout-max nil
+  "Maximum total runtime (seconds) for a Bash command.
+Nil disables the max timeout.")
+
+(defvar gptel-agent-harness-bash-max-output-chars 20000
+  "Maximum characters of Bash output retained (the head budget).
+Oversized output is truncated to the first this-many chars plus the
+last `gptel-agent-harness-bash-tail-lines' lines, discarding the middle.")
+
+(defvar gptel-agent-harness-bash-tail-lines 50
+  "Number of trailing lines retained when Bash output is truncated.")
+
+(defvar gptel-agent-harness-bash-poll-interval 0.2
+  "Seconds between Bash timeout checks.
+The timeout watcher runs on a repeating timer at this interval, so
+silence/max timeouts fire within roughly this latency of the deadline
+\(mirroring the poll loop of the Python harness Bash tool).")
+
+(defvar gptel-agent-harness-bash-kill-grace 2
+  "Seconds to wait after SIGTERM before escalating to SIGKILL.
+On a timeout the process is asked to terminate gracefully (SIGTERM);
+if it is still alive after this many seconds it is killed (SIGKILL),
+mirroring the Python harness Bash tool's graceful escalation.")
+
+(defun gptel-agent-harness-tools--truncate-bash (text)
+  "Return TEXT truncated to head+tail within the max-output budget.
+
+Uses `gptel-agent-harness-bash-max-output-chars' as the budget.
+
+Keeps the first MAX chars and the last TAIL lines, discarding the
+middle, mirroring the Python harness Bash tool.  Returns TEXT unchanged
+when it fits within the budget."
+  (let ((max-chars gptel-agent-harness-bash-max-output-chars)
+        (tail-lines gptel-agent-harness-bash-tail-lines))
+    (if (<= (length text) max-chars)
+        text
+      (let* ((lines (split-string text "\n" t))
+             (n (length lines))
+             (tail (if (<= n tail-lines)
+                       lines
+                     (nthcdr (- n tail-lines) lines)))
+             (notice (format "... [truncated: output exceeded %d chars] ..." max-chars))
+             (tail-text (string-join tail "\n"))
+             (budget (max 0 (- max-chars (length notice) 4)))
+             (head-budget (max 0 (- budget (length tail-text))))
+             (head (substring text 0 (min head-budget (length text)))))
+        (concat head "\n\n" notice
+                (if tail-text (concat "\n\n" tail-text) ""))))))
+
+(defun gptel-agent-harness-tools--kill-graceful (proc)
+  "Terminate PROC gracefully: SIGTERM now, SIGKILL after a grace period.
+
+Sends SIGTERM so the shell can clean up, then escalates to SIGKILL if
+the process is still alive after `gptel-agent-harness-bash-kill-grace'
+seconds.  Mirrors the Python harness Bash tool's `_kill_graceful'.  The
+escalation is scheduled on a one-shot timer so this function never
+blocks the event loop.
+
+Note: unlike the Python harness (which kills the whole process group),
+this signals only the bash process itself.  Emacs `make-process' does
+not put the child in its own session, so detached grandchildren (e.g.
+`foo &') may outlive a timeout kill.  A process-group kill would require
+launching under `setsid', which is Linux-specific and breaks exit-code
+and output propagation through `make-process', so it is intentionally
+not done here."
+  (when (process-live-p proc)
+    (signal-process proc 'TERM)
+    (run-with-timer
+     gptel-agent-harness-bash-kill-grace nil
+     (lambda ()
+       (when (process-live-p proc)
+         (signal-process proc 'KILL))))))
+
+(defun gptel-agent-harness-tools--execute-bash (callback command)
+  "Execute COMMAND asynchronously in bash with timeout and output truncation.
+
+CALLBACK is called with the assembled output string when the process
+finishes (or is killed by a timeout).
+
+Override of `gptel-agent--execute-bash'.  Adds a silence/max timeout
+and head+tail truncation of oversized output, mirroring the Python
+harness Bash tool.  A repeating watcher (every
+`gptel-agent-harness-bash-poll-interval' seconds) checks the deadlines,
+so a timeout fires promptly rather than at a fixed interval; on timeout
+the process is terminated gracefully (SIGTERM, then SIGKILL after
+`gptel-agent-harness-bash-kill-grace' seconds).  The exit code is always
+appended as the last line so it survives truncation."
+  (let* ((output-buffer (generate-new-buffer " *gptel-agent-bash*"))
+         (start (float-time))
+         (last-output (float-time))
+         (last-size 0)
+         (timed-out nil)
+         (timeout-reason nil)
+         (timer nil)
+         (proc nil))
+    (setq proc
+          (make-process
+           :name "gptel-agent-bash"
+           :buffer output-buffer
+           :command (list "bash" "-c" command)
+           :connection-type 'pipe
+           :file-handler t
+           :sentinel
+           (lambda (process _event)
+             (when (memq (process-status process) '(exit signal))
+               (when timer (cancel-timer timer))
+               (let* ((exit-code (process-exit-status process))
+                      (raw (with-current-buffer (process-buffer process)
+                             (buffer-string)))
+                      (out (string-trim-right
+                            (gptel-agent-harness-tools--truncate-bash raw))))
+                 (kill-buffer (process-buffer process))
+                 (funcall
+                  callback
+                  (cond
+                   (timed-out
+                    (let ((suffix (format "Error: Bash command timed out (%s)."
+                                          timeout-reason)))
+                      (if (string-empty-p out)
+                          suffix
+                        (format "%s\n\n%s" out suffix))))
+                   ((zerop exit-code)
+                    (if (string-empty-p out)
+                        "Exit code: 0"
+                      (concat out "\nExit code: 0")))
+                   (t
+                    (format "Command failed with exit code %d:\nSTDOUT+STDERR:\n%s\nExit code: %d"
+                            exit-code out exit-code)))))))))
+    ;; Only run the watcher when a timeout is actually configured;
+    ;; otherwise there is nothing to poll for and the timer would spin
+    ;; uselessly until the sentinel fires.
+    (when (or gptel-agent-harness-bash-timeout-silence
+              gptel-agent-harness-bash-timeout-max)
+      (setq timer
+            (run-with-timer
+             gptel-agent-harness-bash-poll-interval
+             gptel-agent-harness-bash-poll-interval
+             (lambda ()
+               (when (and (process-live-p proc) (not timed-out))
+                 (let ((now (float-time)))
+                   (when (buffer-live-p output-buffer)
+                     (with-current-buffer output-buffer
+                       (when (> (buffer-size) last-size)
+                         (setq last-size (buffer-size)
+                               last-output now))))
+                   (cond
+                    ((and gptel-agent-harness-bash-timeout-silence
+                          (>= (- now last-output)
+                              gptel-agent-harness-bash-timeout-silence))
+                     (setq timed-out t
+                           timeout-reason
+                           (format "no output for %ds"
+                                   (floor gptel-agent-harness-bash-timeout-silence)))
+                     (when timer (cancel-timer timer))
+                     (gptel-agent-harness-tools--kill-graceful proc))
+                    ((and gptel-agent-harness-bash-timeout-max
+                          (>= (- now start)
+                              gptel-agent-harness-bash-timeout-max))
+                     (setq timed-out t
+                           timeout-reason
+                           (format "exceeded the %ds maximum"
+                                   (floor gptel-agent-harness-bash-timeout-max)))
+                     (when timer (cancel-timer timer))
+                     (gptel-agent-harness-tools--kill-graceful proc)))))))))
+    proc))
+
 ;;;; Glob Tool — git ls-files with tree fallback
 
 (defun gptel-agent-harness-tools--glob (pattern &optional path depth)
@@ -492,7 +664,10 @@ refining the plan."
 ;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
 
 (defun gptel-agent-harness-tools-enable ()
-  "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions.
+  "Override the glob, grep and bash tools; register extra tools.
+Overrides `gptel-agent--glob', `gptel-agent--grep' and
+`gptel-agent--execute-bash'.
+The Bash override adds a timeout and head+tail output truncation.
 Also register additional tools (Question, PlanExit).
 
 The overrides are installed as `:override' advice, so no copy of the
@@ -503,6 +678,9 @@ idempotent — `advice-add' does not install the same function twice."
     (advice-add 'gptel-agent--glob :override #'gptel-agent-harness-tools--glob))
   (when (fboundp 'gptel-agent--grep)
     (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep))
+  (when (fboundp 'gptel-agent--execute-bash)
+    (advice-add 'gptel-agent--execute-bash
+                :override #'gptel-agent-harness-tools--execute-bash))
   (gptel-agent-harness-tools--register-question)
   (gptel-agent-harness-tools--register-plan-exit))
 
@@ -511,6 +689,8 @@ idempotent — `advice-add' does not install the same function twice."
 Also unregister additional tools (Question, PlanExit)."
   (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
   (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
+  (advice-remove 'gptel-agent--execute-bash
+                 #'gptel-agent-harness-tools--execute-bash)
   (gptel-agent-harness-tools--unregister-question)
   (gptel-agent-harness-tools--unregister-plan-exit))
 
