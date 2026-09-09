@@ -5,7 +5,7 @@
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Package-Version: 0.3
+;; Package-Version: 0.4
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: programming, convenience, ai, agent
 ;;
