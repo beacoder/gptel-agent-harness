@@ -5,7 +5,7 @@
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Version: 0.3
+;; Version: 0.4
 ;; Created: 2026-07-15
 ;; Keywords: programming, convenience, ai, agent
 ;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel "0.9.9") (gptel-agent "0.0.1"))
@@ -55,7 +55,6 @@
 (require 'gptel-agent-harness-agent)
 (require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)
-(require 'gptel-agent-harness-fsm)
 (require 'cl-lib)
 
 ;;;; Minor Mode
