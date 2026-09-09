@@ -50,7 +50,7 @@
 (require 'edebug)
 (require 'testcover)
 
-(defcustom gptel-agent-harness-coverage-minimum 70
+(defcustom gptel-agent-harness-coverage-minimum 90
   "Minimum required form-level test coverage percentage.
 Raise this as more coverage is added."
   :type 'integer
