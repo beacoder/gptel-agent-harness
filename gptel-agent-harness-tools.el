@@ -51,13 +51,17 @@
 
 ;;;; Bash Tool — head+tail truncation + timeout
 
-(defvar gptel-agent-harness-bash-timeout-silence 120
+(defcustom gptel-agent-harness-bash-timeout-silence 120
   "Kill a Bash command that produces no output for this many seconds.
-Nil disables the silence timeout.")
+Nil disables the silence timeout."
+  :type '(choice (const :tag "Disabled" nil) (natnum :tag "Seconds"))
+  :group 'gptel-agent-harness)
 
-(defvar gptel-agent-harness-bash-timeout-max nil
+(defcustom gptel-agent-harness-bash-timeout-max nil
   "Maximum total runtime (seconds) for a Bash command.
-Nil disables the max timeout.")
+Nil disables the max timeout."
+  :type '(choice (const :tag "Disabled" nil) (natnum :tag "Seconds"))
+  :group 'gptel-agent-harness)
 
 (defvar gptel-agent-harness-bash-max-output-chars 20000
   "Maximum characters of Bash output retained (the head budget).
