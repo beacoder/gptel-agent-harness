@@ -521,6 +521,36 @@ message ordering, so the prompts go after the tool result message."
   ;; Partial match — prefix only
   (should-not (gptel-agent-harness--plan-exit-notice-p "The plan at ")))
 
+(ert-deftest gptel-agent-harness-test-plan-exit-notice-p-custom-templates ()
+  "Test `--plan-exit-notice-p' against customized approval templates.
+
+The placeholder may sit at either end of the template.  A leading %s
+leaves an empty literal before it, which must still be handled: taking
+the trailing literal as a prefix would never match the real message."
+  ;; Placeholder first: only a trailing literal anchors the match.
+  (let ((gptel-agent-harness-tools-plan-exit-approved-message
+         "%s was approved, execute it"))
+    (should (gptel-agent-harness--plan-exit-notice-p
+             (format gptel-agent-harness-tools-plan-exit-approved-message
+                     "/tmp/PLAN.md")))
+    (should-not (gptel-agent-harness--plan-exit-notice-p
+                 "fix the login bug in auth.el")))
+  ;; Placeholder last: only a leading literal anchors the match.
+  (let ((gptel-agent-harness-tools-plan-exit-approved-message "Approved: %s"))
+    (should (gptel-agent-harness--plan-exit-notice-p "Approved: /tmp/PLAN.md"))
+    (should-not (gptel-agent-harness--plan-exit-notice-p "fix the bug")))
+  ;; No placeholder: the template must match verbatim.
+  (let ((gptel-agent-harness-tools-plan-exit-approved-message "Plan approved"))
+    (should (gptel-agent-harness--plan-exit-notice-p "Plan approved"))
+    (should-not (gptel-agent-harness--plan-exit-notice-p "Plan approved!")))
+  ;; Placeholder only: no literal to anchor on.  Matching everything here
+  ;; would make `--filter-user-prompts' discard every real user prompt, so
+  ;; such a template must match nothing at all.
+  (let ((gptel-agent-harness-tools-plan-exit-approved-message "%s"))
+    (should-not (gptel-agent-harness--plan-exit-notice-p "fix the bug"))
+    (should-not (gptel-agent-harness--plan-exit-notice-p "/tmp/PLAN.md"))
+    (should-not (gptel-agent-harness--mode-reminder-p "fix the bug"))))
+
 ;;;; Subagent Spec Tests
 
 (ert-deftest gptel-agent-harness-test-subagent-spec ()
