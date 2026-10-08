@@ -97,25 +97,30 @@ invariant holds.  Returns TEXT unchanged when it fits within the budget."
         (tail-lines gptel-agent-harness-bash-tail-lines))
     (if (<= (length text) max-chars)
         text
-      (let* ((lines (split-string text "\n" nil))
-             (n (length lines))
-             (tail (if (<= n tail-lines)
-                       lines
-                     (nthcdr (- n tail-lines) lines)))
-             (notice (format "... [truncated: output exceeded %d chars] ..." max-chars))
-             ;; Fixed cost of the notice plus the two "\n\n" separators.
-             (budget (max 0 (- max-chars (length notice) 4)))
-             ;; The tail may claim at most half the budget; the head gets
-             ;; whatever is left after the (possibly truncated) tail.
-             (tail-budget (floor budget 2))
-             (tail-text (let ((joined (string-join tail "\n")))
-                          (if (> (length joined) tail-budget)
-                              (substring joined (- (length joined) tail-budget))
-                            joined)))
-             (head-budget (max 0 (- budget (length tail-text))))
-             (head (substring text 0 (min head-budget (length text)))))
-        (concat head "\n\n" notice
-                (if tail-text (concat "\n\n" tail-text) ""))))))
+      (let ((notice (format "... [truncated: output exceeded %d chars] ..." max-chars)))
+        ;; When the budget cannot even hold the notice plus its two "\n\n"
+        ;; separators, a head+tail frame would itself exceed MAX-CHARS and
+        ;; break the documented invariant.  Fall back to a plain head cut.
+        (if (< max-chars (+ (length notice) 4))
+            (substring text 0 (max 0 max-chars))
+          (let* ((lines (split-string text "\n" nil))
+                 (n (length lines))
+                 (tail (if (<= n tail-lines)
+                           lines
+                         (nthcdr (- n tail-lines) lines)))
+                 ;; Fixed cost of the notice plus the two "\n\n" separators.
+                 (budget (max 0 (- max-chars (length notice) 4)))
+                 ;; The tail may claim at most half the budget; the head gets
+                 ;; whatever is left after the (possibly truncated) tail.
+                 (tail-budget (floor budget 2))
+                 (tail-text (let ((joined (string-join tail "\n")))
+                              (if (> (length joined) tail-budget)
+                                  (substring joined (- (length joined) tail-budget))
+                                joined)))
+                 (head-budget (max 0 (- budget (length tail-text))))
+                 (head (substring text 0 (min head-budget (length text)))))
+            (concat head "\n\n" notice
+                    (if tail-text (concat "\n\n" tail-text) ""))))))))
 
 (defun gptel-agent-harness-tools--kill-graceful (proc)
   "Terminate PROC gracefully: SIGTERM now, SIGKILL after a grace period.
