@@ -161,15 +161,35 @@ plan-exit approved message template."
       (gptel-agent-harness--plan-exit-notice-p text)))
 
 (defun gptel-agent-harness--plan-exit-notice-p (text)
-  "Return non-nil if TEXT matches the plan-exit approved message template."
+  "Return non-nil if TEXT matches the plan-exit approved message template.
+
+The template is `gptel-agent-harness-tools-plan-exit-approved-message',
+whose %s placeholder stands for the plan file path.  TEXT matches when it
+starts with the literal text before the placeholder and ends with the
+literal text after it.
+
+`split-string' is called WITHOUT omit-nulls so that an empty leading or
+trailing literal is preserved: with omit-nulls a template beginning with
+%s would yield its trailing literal as the \"prefix\" and compare it with
+`string-prefix-p', which never matches the real message.
+
+A template consisting of nothing but the placeholder has no literal to
+anchor on and would match every string, silently discarding real user
+prompts in `gptel-agent-harness-commands--filter-user-prompts'; such a
+template therefore matches nothing."
   (let ((template gptel-agent-harness-tools-plan-exit-approved-message))
     (if (not (string-match-p "%s" template))
         (string= text template)
-      (let* ((parts (split-string template "%s" t))
+      (let* ((parts (split-string template "%s"))
              (prefix (car parts))
-             (suffix (cadr parts)))
-        (and (string-prefix-p prefix text)
-             (or (null suffix) (string-suffix-p suffix text)))))))
+             (suffix (car (last parts))))
+        (and (not (and (string-empty-p prefix) (string-empty-p suffix)))
+             (string-prefix-p prefix text)
+             (string-suffix-p suffix text)
+             ;; Guard against prefix and suffix overlapping in a short TEXT,
+             ;; which would match even though the placeholder expanded to
+             ;; nothing coherent.
+             (>= (length text) (+ (length prefix) (length suffix))))))))
 
 (defun gptel-agent-harness-commands--filter-user-prompts (texts)
   "Return the kept user messages from TEXTS, oldest first.
