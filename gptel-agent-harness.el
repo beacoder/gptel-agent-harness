@@ -100,7 +100,6 @@ Provides completion and context supervision."
     (gptel-agent-harness-commands-disable)
     (gptel-agent-harness-tools-disable)
     (gptel-agent-harness-agent-disable)
-    (gptel-agent-harness-fsm-disable)
     (gptel-agent-harness-supervisor-disable)
     (when (boundp 'gptel-mode-map)
       (define-key gptel-mode-map (kbd "C-c C-k") nil))
