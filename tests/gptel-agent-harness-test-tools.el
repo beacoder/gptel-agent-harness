@@ -506,6 +506,29 @@ This holds even when the tail lines are themselves very long."
            (out (gptel-agent-harness-tools--truncate-bash text)))
       (should (<= (length out) gptel-agent-harness-bash-max-output-chars)))))
 
+(ert-deftest gptel-agent-harness-test-bash-truncate-budget-below-notice ()
+  "The budget invariant holds even when it cannot fit the truncation notice.
+
+The head+tail frame costs the notice plus two \"\\n\\n\" separators.  When
+`gptel-agent-harness-bash-max-output-chars' is smaller than that fixed
+cost, emitting the frame would itself overflow the budget, so the helper
+falls back to a plain head cut instead."
+  (let ((gptel-agent-harness-bash-tail-lines 50)
+        (text (string-join (cl-loop for i from 1 to 100
+                                    collect (format "line-%03d-padding" i))
+                           "\n")))
+    (dolist (max '(40 30 10 1))
+      (let* ((gptel-agent-harness-bash-max-output-chars max)
+             (out (gptel-agent-harness-tools--truncate-bash text)))
+        (should (= (length out) max))
+        ;; The frame is suppressed entirely: a notice would not fit.
+        (should-not (string-match-p "truncated: output exceeded" out))
+        ;; What survives is the head of the original output.
+        (should (equal out (substring text 0 max)))))
+    ;; A zero budget yields the empty string rather than signalling.
+    (let ((gptel-agent-harness-bash-max-output-chars 0))
+      (should (equal (gptel-agent-harness-tools--truncate-bash text) "")))))
+
 (ert-deftest gptel-agent-harness-test-bash-truncate-preserves-empty-lines ()
   "Blank lines are preserved, so the tail is the last N physical lines."
   (let ((gptel-agent-harness-bash-max-output-chars 200)
