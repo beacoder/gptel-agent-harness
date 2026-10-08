@@ -1,10 +1,12 @@
-;;; gptel-agent-harness-tools.el --- Improved glob/grep tools for gptel-agent-harness -*- lexical-binding: t -*-
+;;; gptel-agent-harness-test-tools.el --- Tools module tests -*- lexical-binding: t -*-
 ;;
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; Assisted-by: Kiro-cli:claude-opus-4-8, gptel-agent-harness:deepseek-v4-flash
 ;; URL: https://github.com/beacoder/gptel-agent-harness
+;; Package-Version: 0.3
+;; Keywords: programming, convenience, ai, agent
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -23,698 +25,606 @@
 
 ;;; Commentary:
 ;;
-;; Improved glob and grep tools for gptel-agent-harness:
+;; ERT tests for the tools module (gptel-agent-harness-tools): the
+;; enhanced glob/grep overrides, the Question tool, and the PlanExit
+;; tool.
 ;;
-;; - `gptel-agent-harness-tools--glob': Uses `git ls-files' for fast,
-;;   .gitignore-aware file listing in git repos, falling back to `tree'
-;;   outside of git.
-;;
-;; - `gptel-agent-harness-tools--grep': Like the upstream grep but passes
-;;   the regex via `-e' flag to git-grep for robustness.
-;;
-;; These are activated/deactivated by `gptel-agent-harness-mode' in
-;; gptel-agent-harness.el.  No separate mode is needed.
-;;
-;; Usage:
-;;   (require 'gptel-agent-harness-tools)
+;; Part of the split suite in this directory; see
+;; gptel-agent-harness-test.el for how to run it.
 ;;
 ;;; Code:
 
-(require 'gptel-agent)
+(require 'ert)
 (require 'cl-lib)
+(require 'gptel-agent-harness-test-utils)
 
-;;;; Internal State
+;;;; Tool Override Tests (gptel-agent-harness-tools)
 
-(defvar gptel-agent-harness--default-tools
-  '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert" "Edit" "Write" "Mkdir" "Bash" "Skill" "Question")
-  "Default tool names for `gptel-agent-harness-commands-initialize' and `-review'.")
+(ert-deftest gptel-agent-harness-test-tools-enable-disable-idempotent ()
+  "Test tools enable/disable: overrides, restores, and idempotency."
+  (let ((orig-glob (symbol-function 'gptel-agent--glob))
+        (orig-grep (symbol-function 'gptel-agent--grep))
+        (orig-bash (symbol-function 'gptel-agent--execute-bash)))
+    (unwind-protect
+        (progn
+          (gptel-agent-harness-tools-enable)
+          ;; After enable, glob/grep/bash should NOT be the originals
+          (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          (should-not (eq (symbol-function 'gptel-agent--execute-bash) orig-bash))
+          ;; The harness overrides are installed as advice
+          (should (advice-member-p #'gptel-agent-harness-tools--glob
+                                  'gptel-agent--glob))
+          (should (advice-member-p #'gptel-agent-harness-tools--grep
+                                  'gptel-agent--grep))
+          (should (advice-member-p #'gptel-agent-harness-tools--execute-bash
+                                  'gptel-agent--execute-bash))
+          ;; Second enable is a no-op: advice-add does not double-install,
+          ;; so a single disable still fully restores the originals.
+          (gptel-agent-harness-tools-enable)
+          ;; Disable should restore
+          (gptel-agent-harness-tools-disable)
+          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          (should (eq (symbol-function 'gptel-agent--execute-bash) orig-bash))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--glob
+                                      'gptel-agent--glob))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--grep
+                                      'gptel-agent--grep))
+          (should-not (advice-member-p #'gptel-agent-harness-tools--execute-bash
+                                      'gptel-agent--execute-bash)))
+      ;; Safety restore
+      (fset 'gptel-agent--glob orig-glob)
+      (fset 'gptel-agent--grep orig-grep)
+      (fset 'gptel-agent--execute-bash orig-bash))))
 
-;;;; Bash Tool — head+tail truncation + timeout
+;;;; Question Tool Tests
 
-(defcustom gptel-agent-harness-bash-timeout-silence 120
-  "Kill a Bash command that produces no output for this many seconds.
-Nil disables the silence timeout."
-  :type '(choice (const :tag "Disabled" nil) (natnum :tag "Seconds"))
-  :group 'gptel-agent-harness)
+(ert-deftest gptel-agent-harness-test-question-ask-one-single-select ()
+  "Test single-select question via `completing-read'."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _) (car choices))))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Pick one:" ["alpha" "beta" "gamma"] nil t)))
+      (should (equal result '("alpha"))))))
 
-(defcustom gptel-agent-harness-bash-timeout-max nil
-  "Maximum total runtime (seconds) for a Bash command.
-Nil disables the max timeout."
-  :type '(choice (const :tag "Disabled" nil) (natnum :tag "Seconds"))
-  :group 'gptel-agent-harness)
+(ert-deftest gptel-agent-harness-test-question-ask-one-multi-select ()
+  "Test multi-select question via `completing-read-multiple'."
+  (cl-letf (((symbol-function 'completing-read-multiple)
+             (lambda (_prompt choices &rest _)
+               (list (nth 0 choices) (nth 1 choices)))))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Pick many:" ["alpha" "beta" "gamma"] t t)))
+      (should (equal result '("alpha" "beta"))))))
 
-(defvar gptel-agent-harness-bash-max-output-chars 20000
-  "Maximum characters of Bash output retained (the head budget).
-Oversized output is truncated to the first this-many chars plus the
-last `gptel-agent-harness-bash-tail-lines' lines, discarding the middle.")
+(ert-deftest gptel-agent-harness-test-question-ask-one-free-text ()
+  "Test free-text fallback when no options provided."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (_prompt &rest _) "my custom answer")))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "What do you think?" nil nil nil)))
+      (should (equal result '("my custom answer"))))))
 
-(defvar gptel-agent-harness-bash-tail-lines 50
-  "Number of trailing lines retained when Bash output is truncated.")
+(ert-deftest gptel-agent-harness-test-question-ask-one-custom-option ()
+  "Test selecting the custom free-text option triggers `read-string'."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _)
+               ;; Simulate user selecting the custom option (last item)
+               (car (last choices))))
+            ((symbol-function 'read-string)
+             (lambda (_prompt &rest _) "typed answer")))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Choose:" ["opt1" "opt2"] nil t)))
+      (should (equal result '("typed answer"))))))
 
-(defvar gptel-agent-harness-bash-poll-interval 0.2
-  "Seconds between Bash timeout checks.
-The timeout watcher runs on a repeating timer at this interval, so
-silence/max timeouts fire within roughly this latency of the deadline.")
+(ert-deftest gptel-agent-harness-test-question-ask-one-no-custom ()
+  "Test that custom=nil does not append the free-text option."
+  (let ((offered-choices nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered-choices choices)
+                 (car choices))))
+      (gptel-agent-harness-tools--ask-one
+       "Choose:" ["opt1" "opt2"] nil nil)
+      (should (equal offered-choices '("opt1" "opt2")))
+      (should-not (member gptel-agent-harness-tools--custom-option
+                          offered-choices)))))
 
-(defvar gptel-agent-harness-bash-kill-grace 2
-  "Seconds to wait after SIGTERM before escalating to SIGKILL.
-On a timeout the process is asked to terminate gracefully (SIGTERM);
-if it is still alive after this many seconds it is killed (SIGKILL).")
+(ert-deftest gptel-agent-harness-test-question-ask-questions-multiple ()
+  "Test processing multiple questions returns formatted output."
+  (let ((call-count 0))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (cl-incf call-count)
+                 (car choices)))
+              ((symbol-function 'read-string)
+               (lambda (_prompt &rest _) "free text")))
+      (let* ((questions (vector
+                         (list :question "Q1?" :options ["a" "b"])
+                         (list :question "Q2?")))  ; no options → free text
+             (result (gptel-agent-harness-tools--ask-questions questions)))
+        (should (string-match-p "\"Q1\\?\" = \"a\"" result))
+        (should (string-match-p "\"Q2\\?\" = \"free text\"" result))))))
 
-(defun gptel-agent-harness-tools--truncate-bash (text)
-  "Return TEXT truncated to head+tail within the max-output budget.
+(ert-deftest gptel-agent-harness-test-question-custom-json-false ()
+  "Test that :custom :json-false disables the custom option."
+  (let ((offered-choices nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered-choices choices)
+                 (car choices))))
+      (let* ((questions (vector
+                         (list :question "Pick:" :options ["x" "y"]
+                               :custom :json-false)))
+             (result (gptel-agent-harness-tools--ask-questions questions)))
+        (should (string-match-p "\"Pick:\" = \"x\"" result))
+        (should-not (member gptel-agent-harness-tools--custom-option
+                            offered-choices))))))
 
-Uses `gptel-agent-harness-bash-max-output-chars' as the budget.
+(ert-deftest gptel-agent-harness-test-question-ask-questions-list-input ()
+  "Test `--ask-questions' accepts a plain list of question plists."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _) (car choices))))
+    (let ((result (gptel-agent-harness-tools--ask-questions
+                   (list (list :question "L1?" :options ["a" "b"])
+                         (list :question "L2?" :options ["c"])))))
+      (should (string-match-p "\"L1\\?\" = \"a\"" result))
+      (should (string-match-p "\"L2\\?\" = \"c\"" result)))))
 
-Keeps the first part of the output and the last
-`gptel-agent-harness-bash-tail-lines' lines, discarding the middle.
-The returned string is always
-no longer than `gptel-agent-harness-bash-max-output-chars': the tail may
-claim at most half the budget, and if it would exceed that it is
-truncated from the front (keeping the most recent output) so the
-invariant holds.  Returns TEXT unchanged when it fits within the budget."
-  (let ((max-chars gptel-agent-harness-bash-max-output-chars)
-        (tail-lines gptel-agent-harness-bash-tail-lines))
-    (if (<= (length text) max-chars)
-        text
-      (let ((notice (format "... [truncated: output exceeded %d chars] ..." max-chars)))
-        ;; When the budget cannot even hold the notice plus its two "\n\n"
-        ;; separators, a head+tail frame would itself exceed MAX-CHARS and
-        ;; break the documented invariant.  Fall back to a plain head cut.
-        (if (< max-chars (+ (length notice) 4))
-            (substring text 0 (max 0 max-chars))
-          (let* ((lines (split-string text "\n" nil))
-                 (n (length lines))
-                 (tail (if (<= n tail-lines)
-                           lines
-                         (nthcdr (- n tail-lines) lines)))
-                 ;; Fixed cost of the notice plus the two "\n\n" separators.
-                 (budget (max 0 (- max-chars (length notice) 4)))
-                 ;; The tail may claim at most half the budget; the head gets
-                 ;; whatever is left after the (possibly truncated) tail.
-                 (tail-budget (floor budget 2))
-                 (tail-text (let ((joined (string-join tail "\n")))
-                              (if (> (length joined) tail-budget)
-                                  (substring joined (- (length joined) tail-budget))
-                                joined)))
-                 (head-budget (max 0 (- budget (length tail-text))))
-                 (head (substring text 0 (min head-budget (length text)))))
-            (concat head "\n\n" notice
-                    (if tail-text (concat "\n\n" tail-text) ""))))))))
+(ert-deftest gptel-agent-harness-test-question-register-unregister ()
+  "Test Question tool registration and unregistration."
+  (let ((gptel-agent-harness-tools--question-tool nil)
+        (gptel--known-tools nil))
+    ;; Register
+    (gptel-agent-harness-tools--register-question)
+    (should gptel-agent-harness-tools--question-tool)
+    (should (assoc "gptel-agent" gptel--known-tools #'equal))
+    ;; Unregister
+    (gptel-agent-harness-tools--unregister-question)
+    (should-not gptel-agent-harness-tools--question-tool)))
 
-(defun gptel-agent-harness-tools--kill-graceful (proc)
-  "Terminate PROC gracefully: SIGTERM now, SIGKILL after a grace period.
+;;;; PlanExit Tool Tests
 
-Sends SIGTERM so the shell can clean up, then escalates to SIGKILL if
-the process is still alive after `gptel-agent-harness-bash-kill-grace'
-seconds.  Mirrors the Python harness Bash tool's `_kill_graceful'.  The
-escalation is scheduled on a one-shot timer so this function never
-blocks the event loop.
+(ert-deftest gptel-agent-harness-test-plan-exit-noop-in-build-mode ()
+  "`PlanExit' is a no-op outside plan mode: no approval, no mode change."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-agent-harness--mode 'build)
+      (setq-local gptel-agent-harness--pending-prompts nil)
+      (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                 (lambda (&rest _) (error "Should not prompt outside plan mode"))))
+        (let ((result (gptel-agent-harness-tools--plan-exit)))
+          (should (string-match-p "no effect" result))
+          (should (eq gptel-agent-harness--mode 'build))
+          (should (null gptel-agent-harness--pending-prompts)))))))
 
-Note: unlike the Python harness (which kills the whole process group),
-this signals only the bash process itself.  Emacs `make-process' does
-not put the child in its own session, so detached grandchildren (e.g.
-`foo &') may outlive a timeout kill.  A process-group kill would require
-launching under `setsid', which is Linux-specific and breaks exit-code
-and output propagation through `make-process', so it is intentionally
-not done here."
-  (when (process-live-p proc)
-    (signal-process proc 'TERM)
-    (run-with-timer
-     gptel-agent-harness-bash-kill-grace nil
-     (lambda ()
-       (when (process-live-p proc)
-         (signal-process proc 'KILL))))))
+(ert-deftest gptel-agent-harness-test-plan-exit-approve-switches-to-build ()
+  "Approving `PlanExit' switches to build mode and queues build-switch + execute-plan prompts."
+  (gptel-agent-harness-test--with-temp-dir proj-dir
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--project-dir proj-dir)
+        (setq-local gptel-agent-harness--mode 'plan)
+        (setq-local gptel-agent-harness--plan-file
+                    (expand-file-name "PLAN.md" proj-dir))
+        (setq-local gptel-agent-harness--pending-prompts nil)
+        (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                   (lambda (&rest _) t)))
+          (let ((result (gptel-agent-harness-tools--plan-exit)))
+            (should (string-match-p "approved" result))
+            ;; Result instructs the agent to proceed, not to wait.
+            (should (string-match-p "proceed" result))
+            (should-not (string-match-p "Wait for further" result))
+            (should (eq gptel-agent-harness--mode 'build))
+            ;; Two queued user prompts: build-switch first, execute-plan second.
+            (should (= 2 (length gptel-agent-harness--pending-prompts)))
+            ;; The execute-plan message is last and names the plan file.
+            (let ((last (car (last gptel-agent-harness--pending-prompts))))
+              (should (string-match-p "Execute the plan" last))
+              (should (string-match-p "PLAN.md" last)))))))))
 
-(defun gptel-agent-harness-tools--execute-bash (callback command)
-  "Execute COMMAND asynchronously in bash with timeout and output truncation.
+(ert-deftest gptel-agent-harness-test-plan-exit-reject-stays-in-plan ()
+  "Rejecting `PlanExit' leaves the buffer in plan mode with nothing queued."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-agent-harness--mode 'plan)
+      (setq-local gptel-agent-harness--pending-prompts nil)
+      (cl-letf (((symbol-function 'gptel-agent-harness-tools--plan-exit-approved-p)
+                 (lambda (&rest _) nil)))
+        (let ((result (gptel-agent-harness-tools--plan-exit)))
+          (should (string-match-p "Remain in plan mode" result))
+          (should (eq gptel-agent-harness--mode 'plan))
+          (should (null gptel-agent-harness--pending-prompts)))))))
 
-CALLBACK is called with the assembled output string when the process
-finishes (or is killed by a timeout).
+(ert-deftest gptel-agent-harness-test-plan-exit-approved-p-batch ()
+  "`--plan-exit-approved-p' uses `yes-or-no-p' in batch mode."
+  (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+    (should (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))
+  (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+    (should-not (gptel-agent-harness-tools--plan-exit-approved-p "Approve?"))))
 
-Override of `gptel-agent--execute-bash'.  Adds a silence/max timeout
-and head+tail truncation of oversized output.
-A repeating watcher (every
-`gptel-agent-harness-bash-poll-interval' seconds) checks the deadlines,
-so a timeout fires promptly rather than at a fixed interval; on timeout
-the process is terminated gracefully (SIGTERM, then SIGKILL after
-`gptel-agent-harness-bash-kill-grace' seconds).  The exit code is always
-appended as the last line so it survives truncation."
-  (let* ((output-buffer (generate-new-buffer " *gptel-agent-bash*"))
-         (start (float-time))
-         (last-output (float-time))
-         (last-size 0)
-         (timed-out nil)
-         (timeout-reason nil)
-         (timer nil)
-         (proc nil))
-    (setq proc
-          (make-process
-           :name "gptel-agent-bash"
-           :buffer output-buffer
-           :command (list "bash" "-c" command)
-           :connection-type 'pipe
-           :file-handler t
-           :sentinel
-           (lambda (process _event)
-             (when (memq (process-status process) '(exit signal))
-               (when timer (cancel-timer timer))
-               (let* ((exit-code (process-exit-status process))
-                      (raw (with-current-buffer (process-buffer process)
-                             (buffer-string)))
-                      (out (string-trim-right
-                            (gptel-agent-harness-tools--truncate-bash raw))))
-                 (kill-buffer (process-buffer process))
-                 (funcall
-                  callback
-                  (cond
-                   (timed-out
-                    (let ((suffix (format "Error: Bash command timed out (%s)."
-                                          timeout-reason)))
-                      (if (string-empty-p out)
-                          suffix
-                        (format "%s\n\n%s" out suffix))))
-                   ((zerop exit-code)
-                    (if (string-empty-p out)
-                        "Exit code: 0"
-                      (concat out "\nExit code: 0")))
-                   (t
-                    (format "Command failed with exit code %d:\nSTDOUT+STDERR:\n%s\nExit code: %d"
-                            exit-code out exit-code)))))))))
-    ;; Only run the watcher when a timeout is actually configured;
-    ;; otherwise there is nothing to poll for and the timer would spin
-    ;; uselessly until the sentinel fires.
-    (when (or gptel-agent-harness-bash-timeout-silence
-              gptel-agent-harness-bash-timeout-max)
-      (setq timer
-            (run-with-timer
-             gptel-agent-harness-bash-poll-interval
-             gptel-agent-harness-bash-poll-interval
-             (lambda ()
-               (when (and (process-live-p proc) (not timed-out))
-                 (let ((now (float-time)))
-                   (when (buffer-live-p output-buffer)
-                     (with-current-buffer output-buffer
-                       (when (> (buffer-size) last-size)
-                         (setq last-size (buffer-size)
-                               last-output now))))
-                   (cond
-                    ((and gptel-agent-harness-bash-timeout-silence
-                          (>= (- now last-output)
-                              gptel-agent-harness-bash-timeout-silence))
-                     (setq timed-out t
-                           timeout-reason
-                           (format "no output for %ds"
-                                   (floor gptel-agent-harness-bash-timeout-silence)))
-                     (when timer (cancel-timer timer))
-                     (gptel-agent-harness-tools--kill-graceful proc))
-                    ((and gptel-agent-harness-bash-timeout-max
-                          (>= (- now start)
-                              gptel-agent-harness-bash-timeout-max))
-                     (setq timed-out t
-                           timeout-reason
-                           (format "exceeded the %ds maximum"
-                                   (floor gptel-agent-harness-bash-timeout-max)))
-                     (when timer (cancel-timer timer))
-                     (gptel-agent-harness-tools--kill-graceful proc)))))))))
-    proc))
+(ert-deftest gptel-agent-harness-test-plan-exit-approved-p-interactive ()
+  "`--plan-exit-approved-p' uses `read-multiple-choice' interactively."
+  (let ((noninteractive nil))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (_prompt _choices) (cons ?y "yes"))))
+      (should (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (_prompt _choices) (cons ?n "no"))))
+      (should-not (gptel-agent-harness-tools--plan-exit-approved-p "Approve?")))))
 
-;;;; Glob Tool — git ls-files with tree fallback
+(ert-deftest gptel-agent-harness-test-plan-exit-register-unregister ()
+  "Test PlanExit tool registration and unregistration."
+  (let ((gptel-agent-harness-tools--plan-exit-tool nil)
+        (gptel--known-tools nil))
+    ;; Register
+    (gptel-agent-harness-tools--register-plan-exit)
+    (should gptel-agent-harness-tools--plan-exit-tool)
+    (should (assoc "gptel-agent" gptel--known-tools #'equal))
+    ;; Unregister
+    (gptel-agent-harness-tools--unregister-plan-exit)
+    (should-not gptel-agent-harness-tools--plan-exit-tool)))
 
-(defun gptel-agent-harness-tools--glob (pattern &optional path depth)
+;;;; Glob Tool Tests
 
-  "Find files matching PATTERN using `git ls-files' or `tree'.
+(ert-deftest gptel-agent-harness-test-glob-error-cases ()
+  "Test glob signals errors for empty pattern and non-readable path."
+  (should-error (gptel-agent-harness-tools--glob "")
+                :type 'error)
+  (should-error (gptel-agent-harness-tools--glob "*.txt" "/nonexistent/path/xyz")
+                :type 'error))
 
-Inside a git repository, uses `git ls-files' which is significantly
-faster and respects .gitignore.  Falls back to `tree' outside git.
+(ert-deftest gptel-agent-harness-test-glob-respects-gitignore ()
+  "Test glob respects .gitignore patterns."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name ".gitignore" temp-dir)
+        (insert "ignored.txt\n"))
+      (with-temp-file (expand-file-name "tracked.txt" temp-dir)
+        (insert "tracked"))
+      (with-temp-file (expand-file-name "ignored.txt" temp-dir)
+        (insert "ignored"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
+        (should (string-match-p "tracked\\.txt" result))
+        (should-not (string-match-p "ignored\\.txt" result))))))
 
-PATTERN is a glob pattern to match filenames against.
-PATH is the optional directory to search (defaults to current directory).
-DEPTH limits recursion depth when provided (non-negative integer).
+(ert-deftest gptel-agent-harness-test-glob-git-path-needs-no-tree ()
+  "Inside a git repo, glob works even when `tree' is not installed.
 
-`tree' is only required for the fallback: inside a git repository the
-git strategy never invokes it, so its absence must not fail the tool
-there.
+The git strategy never invokes `tree', so requiring it up front made the
+tool unusable on machines without it."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (with-temp-file (expand-file-name "hit.txt" temp-dir) (insert "x"))
+      (cl-letf* ((orig-find (symbol-function 'executable-find))
+                 ((symbol-function 'executable-find)
+                  (lambda (cmd &rest args)
+                    (unless (equal cmd "tree")
+                      (apply orig-find cmd args)))))
+        (should-not (executable-find "tree"))
+        (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
+          (should (string-match-p "hit\\.txt" result))))
+      ;; Outside git, `tree' is still required and its absence is reported.
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+        (should-error (gptel-agent-harness-tools--glob "*.txt" temp-dir)
+                      :type 'error)))))
 
-Returns a string listing matching files with full paths.  If the
-output is too large, it is truncated by `gptel-agent--truncate-buffer'."
-  (when (string-empty-p pattern)
-    (error "Error: pattern must not be empty"))
-  (if path
-      (unless (and (file-readable-p path) (file-directory-p path))
-        (error "Error: path %s is not readable" path))
-    (setq path "."))
-  (let* ((full-path (directory-file-name (expand-file-name path)))
-         (git-root
-          (and (executable-find "git") (locate-dominating-file full-path ".git"))))
-    (unless (or git-root (executable-find "tree"))
-      (error "Error: Executable `tree` not found.  This tool cannot be used"))
-    (with-temp-buffer
-      (if git-root
-          ;; --- Git Strategy ---
-          (let* ((default-directory git-root)
-                 (relative-dir (file-relative-name full-path git-root))
-                 (pathspec (if (string= relative-dir ".")
-                               pattern
-                             (concat relative-dir "/" pattern)))
-                 (exit-code
-                  (call-process "git" nil t nil
-                                "ls-files" "-z"
-                                "--full-name"
-                                "--cached"           ; Tracked files
-                                "--others"           ; Untracked files
-                                "--exclude-standard" ; Respect .gitignore
-                                "--" pathspec)))
-            (if (/= exit-code 0)
-                (progn (goto-char (point-min))
-                       (insert (format "Glob failed with exit code %d\n.STDOUT:\n\n"
-                                       exit-code)))
-              ;; Convert null-terminated strings to newline-separated full paths
-              (goto-char (point-min))
-              (while (search-forward "\0" nil t)
-                (replace-match "\n"))
-              ;; Filter by depth if specified
-              (when (natnump depth)
-                (let ((base-depth (if (string= relative-dir ".")
-                                      0
-                                    (1+ (cl-count ?/ relative-dir)))))
-                  (goto-char (point-min))
-                  (while (not (eobp))
-                    (if (and (not (looking-at-p "^$"))
-                             (>= (cl-count ?/ (buffer-substring
-                                               (line-beginning-position)
-                                               (line-end-position)))
-                                 (+ base-depth depth)))
-                        (delete-region (line-beginning-position)
-                                       (min (1+ (line-end-position)) (point-max)))
-                      (forward-line 1)))))
-              ;; Prepend git-root to make paths absolute
-              (goto-char (point-min))
-              (let ((path-prefix (file-name-as-directory git-root)))
-                (while (not (eobp))
-                  (unless (looking-at-p "^$") ; Skip empty lines
-                    (insert path-prefix))
-                  (forward-line 1)))))
-        ;; --- Tree Strategy (Fallback) ---
-        (let* ((args (list "-l" "-f" "-i" "-I" ".git"
-                           "--sort=mtime" "--ignore-case"
-                           "--prune" "-P" pattern full-path))
-               (args (if (natnump depth)
-                         (nconc args (list "-L" (number-to-string depth)))
-                       args))
-               (exit-code (apply #'call-process "tree" nil t nil args)))
-          (when (/= exit-code 0)
-            (goto-char (point-min))
-            (insert (format "Glob failed with exit code %d\n.STDOUT:\n\n"
-                            exit-code)))))
-      (gptel-agent--truncate-buffer "glob")
-      (buffer-string))))
+(ert-deftest gptel-agent-harness-test-glob-defaults-to-current-directory ()
+  "Test glob defaults to the current directory when PATH is nil."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (with-temp-file (expand-file-name "hit.txt" temp-dir) (insert "x"))
+      (with-temp-file (expand-file-name "miss.log" temp-dir) (insert "x"))
+      (let ((result (gptel-agent-harness-tools--glob "*.txt")))
+        (should (string-match-p "hit\\.txt" result))
+        (should-not (string-match-p "miss\\.log" result))))))
 
-;;;; Grep Tool — git grep with -e flag
+;;;; Grep Tool Tests
 
-(defun gptel-agent-harness-tools--grep (regex path &optional glob context-lines)
-  "Search for REGEX in file or directory at PATH.
+(ert-deftest gptel-agent-harness-test-grep-nonexistent-path-errors ()
+  "Test grep with non-readable path signals an error."
+  (should-error (gptel-agent-harness-tools--grep "pattern" "/nonexistent/xyz")
+                :type 'error))
 
-Like the upstream `gptel-agent--grep' but passes REGEX via `-e'
-flag to git-grep, which avoids misinterpretation of patterns
-starting with a dash.
+(ert-deftest gptel-agent-harness-test-grep-in-git-repo ()
+  "Test grep finds matches using git-grep in a git repo."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "foo.txt" temp-dir)
+        (insert "line one\nfoo bar baz\nline three\n"))
+      (with-temp-file (expand-file-name "bar.txt" temp-dir)
+        (insert "nothing here\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Search for "foo" in the whole directory
+      (let ((result (gptel-agent-harness-tools--grep "foo" temp-dir)))
+        (should (string-match-p "foo bar baz" result))
+        (should-not (string-match-p "nothing here" result)))
+      ;; Search in a specific file
+      (let ((result (gptel-agent-harness-tools--grep
+                     "line" (expand-file-name "foo.txt" temp-dir))))
+        (should (string-match-p "line one" result))
+        (should (string-match-p "line three" result))))))
 
-REGEX is a PCRE-format regular expression to search for.
-PATH can be a file or directory to search in.
+(ert-deftest gptel-agent-harness-test-grep-with-glob-filter ()
+  "Test grep respects the glob filter parameter."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "match.el" temp-dir)
+        (insert "target-pattern-here\n"))
+      (with-temp-file (expand-file-name "match.txt" temp-dir)
+        (insert "target-pattern-here\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Search with glob restricting to .el files only
+      (let ((result (gptel-agent-harness-tools--grep
+                     "target-pattern" temp-dir "*.el")))
+        (should (string-match-p "match\\.el" result))
+        (should-not (string-match-p "match\\.txt" result))))))
 
-Optional arguments:
-GLOB restricts the search to files matching the glob pattern.
-CONTEXT-LINES specifies the number of lines of context to show
-  around each match (0-15 inclusive, defaults to 0).
+(ert-deftest gptel-agent-harness-test-grep-dash-pattern ()
+  "Test grep handles patterns starting with a dash via -e flag."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "test.txt" temp-dir)
+        (insert "normal line\n--flag-like-pattern\nanother line\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Pattern starting with dash should not be misinterpreted as a flag
+      (let ((result (gptel-agent-harness-tools--grep
+                     "--flag-like" (expand-file-name "test.txt" temp-dir))))
+        (should (string-match-p "flag-like-pattern" result))))))
 
-Returns a string containing matches grouped by file, with line numbers
-and optional context."
-  (unless (file-readable-p path)
-    (error "Error: File or directory %s is not readable" path))
-  (let* ((full-path (expand-file-name (substitute-in-file-name path)))
-         ;; Explicitly set remote to save ourselves multiple file-remote-p
-         ;; checks inside `executable-find'
-         (remote (file-remote-p default-directory))
-         (git-root (and (executable-find "git" remote)
-                        (locate-dominating-file full-path ".git")))
-         (grepper (cond
-                   (git-root "git")
-                   ((executable-find "rg" remote) "rg")
-                   ((executable-find "grep" remote) "grep")
-                   (t (error "Error: ripgrep/grep/git-grep not available, \
-this tool cannot be used")))))
-    (with-temp-buffer
-      (let* ((default-directory (or git-root default-directory))
-             (args
-              (cond
-               ((string= "git" grepper)
-                (let* ((rel-path (file-relative-name full-path git-root))
-                       (pathspecs
-                        (list (if (and glob (file-directory-p full-path))
-                                  (file-name-concat rel-path glob)
-                                rel-path))))
-                  (delq nil
-                        (nconc
-                         (list "grep"
-                               "--line-number"
-                               "--no-color"
-                               (and (natnump context-lines)
-                                    (format "-C%d" context-lines))
-                               "--max-count=1000"
-                               "--untracked"
-                               "-P" "-e" regex
-                               "--")
-                         pathspecs))))
-               ((string= "rg" grepper)
-                (delq nil (list "--sort=modified"
-                                (and (natnump context-lines)
-                                     (format "--context=%d" context-lines))
-                                (and glob (format "--glob=%s" glob))
-                                "--max-count=1000"
-                                "--heading" "--line-number" "-e" regex
-                                (file-local-name full-path))))
-               ((string= "grep" grepper)
-                (delq nil (list "--recursive"
-                                (and (natnump context-lines)
-                                     (format "--context=%d" context-lines))
-                                (and glob (format "--include=%s" glob))
-                                "--max-count=1000"
-                                "--line-number" "--regexp" regex
-                                (file-local-name full-path))))))
-             (exit-code (apply #'process-file grepper nil '(t t) nil args)))
-        (when (>= exit-code 2)
-          (goto-char (point-min))
-          (insert (format "Error: search failed with exit-code %d.  Tool output:\n\n"
-                          exit-code)))
-        (gptel-agent--truncate-buffer "grep")
-        (buffer-string)))))
+(ert-deftest gptel-agent-harness-test-grep-fallback-rg ()
+  "Outside git, grep falls back to ripgrep when available."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (with-temp-file (expand-file-name "file.txt" temp-dir)
+        (insert "alpha beta\n"))
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (cmd &optional _remote)
+                   (pcase cmd
+                     ("git" nil)
+                     ("rg" t)
+                     ("grep" t))))
+                ((symbol-function 'process-file)
+                 (lambda (_program &optional _infile _destination _display &rest _args)
+                   (insert "file.txt:1:alpha beta\n")
+                   0)))
+        (let ((result (gptel-agent-harness-tools--grep "alpha" temp-dir)))
+          (should (string-match-p "alpha beta" result)))))))
 
-;;;; Question Tool — interactive user prompting
+(ert-deftest gptel-agent-harness-test-grep-fallback-plain-grep ()
+  "Outside git, grep falls back to plain grep when ripgrep is missing."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (with-temp-file (expand-file-name "file.txt" temp-dir)
+        (insert "alpha beta\n"))
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (cmd &optional _remote)
+                   (pcase cmd
+                     ("git" nil)
+                     ("rg" nil)
+                     ("grep" t))))
+                ((symbol-function 'process-file)
+                 (lambda (_program &optional _infile _destination _display &rest _args)
+                   (insert "file.txt:1:alpha beta\n")
+                   0)))
+        (let ((result (gptel-agent-harness-tools--grep "alpha" temp-dir)))
+          (should (string-match-p "alpha beta" result)))))))
 
-(defconst gptel-agent-harness-tools--custom-option
-  "[Type your own answer]"
-  "Label for the free-text option appended to choices.")
+(ert-deftest gptel-agent-harness-test-grep-no-tool-available ()
+  "Outside git with no rg/grep available, grep signals an error."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+      (should-error (gptel-agent-harness-tools--grep "alpha" temp-dir)
+                    :type 'error))))
 
-(defvar gptel-agent-harness-tools--question-tool nil
-  "The registered Question tool object.")
+;;;; Bash Tool Tests (gptel-agent-harness-tools--execute-bash / --truncate-bash)
 
-(defun gptel-agent-harness-tools--ask-one (question options multiple custom)
-  "Ask the user QUESTION with OPTIONS.
+(defun gptel-agent-harness-test--run-bash (command &optional timeout)
+  "Run COMMAND via the harness Bash tool synchronously; return its output.
 
-OPTIONS is a vector of label strings (or nil for free-text only).
-If MULTIPLE is non-nil, allow selecting more than one option.
-If CUSTOM is non-nil, append a free-text option to the choices.
-
-Returns a list of selected label strings."
-  (let* ((choices (when options
-                    (append options nil)))  ; vector -> list
-         (choices (if (and choices custom)
-                      (append choices
-                              (list gptel-agent-harness-tools--custom-option))
-                    choices))
-         (prompt (concat question " "))
-         result)
-    (cond
-     ;; No options at all — just read a string
-     ((null choices)
-      (setq result (list (read-string prompt))))
-     ;; Multiple selection
-     (multiple
-      (let ((selected (completing-read-multiple prompt choices nil t)))
-        (setq result
-              (mapcar
-               (lambda (sel)
-                 (if (string= sel gptel-agent-harness-tools--custom-option)
-                     (read-string (format "%s (your answer): " question))
-                   sel))
-               selected))))
-     ;; Single selection
-     (t
-      (let ((selected (completing-read prompt choices nil t)))
-        (setq result
-              (list
-               (if (string= selected gptel-agent-harness-tools--custom-option)
-                   (read-string (format "%s (your answer): " question))
-                 selected))))))
+Drives the asynchronous `gptel-agent-harness-tools--execute-bash' to
+completion by pumping the event loop until the callback fires, waiting
+at most TIMEOUT seconds (default 30).  Signals an error on timeout."
+  (let ((result nil)
+        (done nil)
+        (deadline (+ (float-time) (or timeout 30))))
+    (gptel-agent-harness-tools--execute-bash
+     (lambda (out) (setq result out done t))
+     command)
+    (while (and (not done) (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (unless done
+      (error "Bash test timed out waiting for callback"))
     result))
 
-(defun gptel-agent-harness-tools--ask-questions (questions)
-  "Process QUESTIONS and return formatted answers string.
+;;; Pure truncation helper
 
-QUESTIONS is a JSON-decoded vector of question objects.  Each object
-is a plist with keys:
-  :question  - The question text (string, required)
-  :options   - Vector of option labels (optional)
-  :multiple  - Whether multi-select is allowed (boolean, optional)
-  :custom    - Whether free-text is allowed (boolean, default t)"
-  (let ((results nil)
-        (questions-list (if (vectorp questions)
-                            (append questions nil)
-                          questions)))
-    (dolist (q questions-list)
-      (let* ((text (plist-get q :question))
-             (options (plist-get q :options))
-             (multiple (eq (plist-get q :multiple) t))
-             (custom (let ((c (plist-get q :custom)))
-                       (if (eq c :json-false) nil t)))  ; default to t
-             (answers (gptel-agent-harness-tools--ask-one
-                       text options multiple custom)))
-        (push (cons text answers) results)))
-    ;; Format output
-    (mapconcat
-     (lambda (pair)
-       (format "\"%s\" = \"%s\""
-               (car pair)
-               (if (cdr pair)
-                   (mapconcat #'identity (cdr pair) ", ")
-                 "Unanswered")))
-     (nreverse results)
-     "\n")))
+(ert-deftest gptel-agent-harness-test-bash-truncate-short-unchanged ()
+  "Output within the char budget is returned unchanged."
+  (let ((gptel-agent-harness-bash-max-output-chars 1000)
+        (gptel-agent-harness-bash-tail-lines 50))
+    (should (equal (gptel-agent-harness-tools--truncate-bash "hello\nworld")
+                   "hello\nworld"))
+    ;; Exactly at the budget is still unchanged.
+    (let ((text (make-string 1000 ?x)))
+      (should (equal (gptel-agent-harness-tools--truncate-bash text) text)))))
 
-(defun gptel-agent-harness-tools--register-question ()
-  "Register the Question tool with gptel."
-  (unless gptel-agent-harness-tools--question-tool
-    (setq gptel-agent-harness-tools--question-tool
-          (gptel-make-tool
-           :name "Question"
-           :function #'gptel-agent-harness-tools--ask-questions
-           :description
-           "Ask the user one or more questions during execution.
+(ert-deftest gptel-agent-harness-test-bash-truncate-head-tail ()
+  "Oversized output keeps the head, a truncation notice, and the tail."
+  (let* ((gptel-agent-harness-bash-max-output-chars 200)
+         (gptel-agent-harness-bash-tail-lines 3)
+         ;; 100 numbered lines, well over the 200-char budget.
+         (lines (cl-loop for i from 1 to 100
+                         collect (format "line-%03d-padding-padding" i)))
+         (text (string-join lines "\n"))
+         (out (gptel-agent-harness-tools--truncate-bash text)))
+    ;; A truncation notice is inserted.
+    (should (string-match-p "truncated: output exceeded 200 chars" out))
+    ;; The head is preserved (first line present).
+    (should (string-match-p "line-001" out))
+    ;; The last 3 lines are preserved as the tail.
+    (should (string-match-p "line-098" out))
+    (should (string-match-p "line-099" out))
+    (should (string-match-p "line-100" out))
+    ;; A line from the discarded middle is gone.
+    (should-not (string-match-p "line-050" out))))
 
-Use this tool when you need to:
-1. Gather user preferences or requirements
-2. Clarify ambiguous instructions
-3. Get decisions on implementation choices as you work
-4. Offer choices to the user about what direction to take
+(ert-deftest gptel-agent-harness-test-bash-truncate-invariant ()
+  "The returned string never exceeds the max-output budget.
+This holds even when the tail lines are themselves very long."
+  (let ((gptel-agent-harness-bash-max-output-chars 200)
+        (gptel-agent-harness-bash-tail-lines 50))
+    ;; 50 lines of 100 chars each: the tail alone (5000 chars) dwarfs the
+    ;; 200-char budget, so the tail must be truncated to keep the invariant.
+    (let* ((lines (cl-loop for i from 1 to 50
+                           collect (format "line-%02d-%s" i (make-string 90 ?x))))
+           (text (string-join lines "\n"))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (<= (length out) gptel-agent-harness-bash-max-output-chars))
+      (should (string-match-p "truncated: output exceeded 200 chars" out)))
+    ;; A single enormous line also respects the budget.
+    (let* ((text (make-string 5000 ?y))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (<= (length out) gptel-agent-harness-bash-max-output-chars)))))
 
-Each question can have predefined options for the user to select from.
-By default, a \"Type your own answer\" option is added; set `custom` to
-false to disable it.  Set `multiple` to true to allow selecting more
-than one option.
+(ert-deftest gptel-agent-harness-test-bash-truncate-preserves-empty-lines ()
+  "Blank lines are preserved, so the tail is the last N physical lines."
+  (let ((gptel-agent-harness-bash-max-output-chars 200)
+        (gptel-agent-harness-bash-tail-lines 3))
+    ;; 100 lines separated by blank lines (well over the 200-char budget);
+    ;; the last 3 physical lines are "l99", "" and "l100".
+    (let* ((lines (cl-loop for i from 1 to 100
+                           collect (format "l%d" i)))
+           (text (string-join lines "\n\n"))
+           (out (gptel-agent-harness-tools--truncate-bash text)))
+      (should (string-match-p "truncated: output exceeded 200 chars" out))
+      ;; The blank line between the last two kept lines is preserved.
+      (should (string-match-p "l99\n\nl100" out))
+      ;; A middle line is discarded.
+      (should-not (string-match-p "l50" out)))))
 
-If no options are provided, the user will be prompted for free-text input.
+;;; Async execution — success and failure
 
-If you recommend a specific option, make that the first option in the
-list and add \"(Recommended)\" at the end of the label.
+(ert-deftest gptel-agent-harness-test-bash-success-appends-exit-code ()
+  "A successful command returns its output with `Exit code: 0' appended."
+  (let ((out (gptel-agent-harness-test--run-bash "echo hello")))
+    (should (equal out "hello\nExit code: 0"))))
 
-Returns the user's answers as quoted key-value pairs, one per line."
-           :args '((:name "questions"
-                    :type array
-                    :description "Array of question objects to ask the user."
-                    :items
-                    (:type object
-                     :properties
-                     (:question
-                      (:type string
-                       :description "The question to ask the user.")
-                      :options
-                      (:type array
-                       :description "Predefined options for the user to choose from. If omitted, user provides free-text."
-                       :items (:type string))
-                      :multiple
-                      (:type boolean
-                       :description "If true, the user can select multiple options. Default: false.")
-                      :custom
-                      (:type boolean
-                       :description "If true (default), a free-text option is appended to the choices. Set to false to restrict to only the provided options."))
-                     :required ["question"])))
-           :category "gptel-agent"
-           :confirm nil
-           :include t))))
+(ert-deftest gptel-agent-harness-test-bash-empty-output-success ()
+  "A successful command with no output returns just the exit-code line."
+  (let ((out (gptel-agent-harness-test--run-bash "true")))
+    (should (equal out "Exit code: 0"))))
 
-(defun gptel-agent-harness-tools--unregister-question ()
-  "Unregister the Question tool from gptel."
-  (when gptel-agent-harness-tools--question-tool
-    (let* ((tool gptel-agent-harness-tools--question-tool)
-           (category (or (gptel-tool-category tool) "misc"))
-           (name (gptel-tool-name tool))
-           (cat-entry (assoc category gptel--known-tools #'equal)))
-      (when cat-entry
-        (setf (alist-get name (cdr cat-entry) nil 'remove #'equal) nil)
-        (unless (cdr cat-entry)
-          (setq gptel--known-tools
-                (assoc-delete-all category gptel--known-tools #'equal)))))
-    (setq gptel-agent-harness-tools--question-tool nil)))
+(ert-deftest gptel-agent-harness-test-bash-failure-reports-exit-code ()
+  "A failing command reports the non-zero exit code and its output."
+  (let ((out (gptel-agent-harness-test--run-bash "echo oops >&2; exit 7")))
+    (should (string-match-p "Command failed with exit code 7" out))
+    (should (string-match-p "oops" out))
+    (should (string-match-p "Exit code: 7" out))))
 
-;;;; PlanExit Tool — request approval to leave plan mode
+(ert-deftest gptel-agent-harness-test-bash-merges-stderr ()
+  "Both stdout and stderr are captured (process merges them via the buffer)."
+  (let ((out (gptel-agent-harness-test--run-bash
+              "echo to-out; echo to-err >&2")))
+    (should (string-match-p "to-out" out))
+    (should (string-match-p "to-err" out))))
 
-;; Forward declarations — defined in gptel-agent-harness-supervisor.el
-;; and gptel-agent-harness-fsm.el, which are loaded before this
-;; file via gptel-agent-harness.el.  All are resolved at call time.
-(declare-function gptel-agent-harness-set-mode "gptel-agent-harness-supervisor" (mode))
-(defvar gptel-agent-harness--mode)
-(defvar gptel-agent-harness--pending-prompts)
-(defvar gptel-agent-harness--plan-file)
+;;; Async execution — truncation applies to real output
 
-(defcustom gptel-agent-harness-tools-plan-exit-approved-message
-  "The plan at %s has been approved, you can now edit files. Execute the plan"
-  "User message injected after the build-switch prompt when PlanExit is approved.
+(ert-deftest gptel-agent-harness-test-bash-truncates-large-output ()
+  "Oversized command output is truncated, with the exit code preserved."
+  (let ((gptel-agent-harness-bash-max-output-chars 500)
+        (gptel-agent-harness-bash-tail-lines 5))
+    (let ((out (gptel-agent-harness-test--run-bash
+                "for i in $(seq 1 500); do echo padded-line-$i; done")))
+      (should (string-match-p "truncated: output exceeded 500 chars" out))
+      ;; Exit-code marker still present despite truncation.
+      (should (string-match-p "Exit code: 0" out))
+      ;; The final line survives in the tail.
+      (should (string-match-p "padded-line-500" out)))))
 
-Queued as a second user prompt (following the build-switch prompt) so
-that, on approval, the agent both learns it is now in build mode and is
-told to execute the approved plan — mirroring OpenCode's synthetic
-approval message.  The %s placeholder is replaced with the plan file
-path (or a generic description when the path is unknown)."
-  :type 'string
-  :group 'gptel-agent-harness)
+;;; Async execution — timeouts
 
-(defvar gptel-agent-harness-tools--plan-exit-tool nil
-  "The registered PlanExit tool object.")
+(ert-deftest gptel-agent-harness-test-bash-silence-timeout ()
+  "A command that produces no output past the silence window is killed."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash "sleep 30" 15)))
+      (should (string-match-p "timed out" out))
+      (should (string-match-p "no output for 1s" out)))))
 
-(defun gptel-agent-harness-tools--plan-exit-approved-p (prompt)
-  "Ask the user PROMPT (a yes/no question); return non-nil on approval.
-Uses `yes-or-no-p' in batch mode and a `read-multiple-choice' prompt
-interactively."
-  (if noninteractive
-      (yes-or-no-p (concat prompt " "))
-    (eq ?y (car (read-multiple-choice
-                 prompt
-                 '((?y "yes, switch to build")
-                   (?n "no, stay in plan")))))))
+(ert-deftest gptel-agent-harness-test-bash-max-timeout ()
+  "A command exceeding the max runtime is killed even while producing output."
+  (let ((gptel-agent-harness-bash-timeout-silence nil)
+        (gptel-agent-harness-bash-timeout-max 1)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash
+                ;; Keeps emitting output so only the max timeout can fire.
+                "while true; do echo tick; sleep 0.2; done" 15)))
+      (should (string-match-p "timed out" out))
+      (should (string-match-p "exceeded the 1s maximum" out)))))
 
-(defun gptel-agent-harness-tools--plan-exit ()
-  "Request user approval to leave plan mode and switch to build mode.
+(ert-deftest gptel-agent-harness-test-bash-no-timeout-when-disabled ()
+  "With both timeouts disabled, a quick command completes normally."
+  (let ((gptel-agent-harness-bash-timeout-silence nil)
+        (gptel-agent-harness-bash-timeout-max nil))
+    (let ((out (gptel-agent-harness-test--run-bash "echo ok")))
+      (should (equal out "ok\nExit code: 0")))))
 
-Runs in the session buffer (see `gptel--handle-tool-use'), so it reads
-and mutates the buffer-local agent mode directly.
+(ert-deftest gptel-agent-harness-test-bash-silence-timeout-is-prompt ()
+  "The silence timeout fires promptly via continuous polling.
+It must not wait on a fixed multi-second interval: with a 1s window
+and sub-second polling, a silent command is reported well under 3s of
+wall-clock time."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let* ((t0 (float-time))
+           (out (gptel-agent-harness-test--run-bash "sleep 30" 10))
+           (elapsed (- (float-time) t0)))
+      (should (string-match-p "no output for 1s" out))
+      ;; 1s window + a little slack for graceful-kill/poll; the old
+      ;; single-shot 5s timer would blow past this.
+      (should (< elapsed 3.0)))))
 
-When the buffer is not in plan mode, this is a no-op.  Otherwise the
-user is prompted (the prompt names the plan file); on approval,
-`gptel-agent-harness-set-mode' switches the buffer to build mode — which
-queues the build-switch prompt — and this then appends
-`gptel-agent-harness-tools-plan-exit-approved-message' as a second
-queued user prompt so the agent both enters build mode and is told to
-execute the plan.  A message is returned telling the agent to proceed
-with implementation.  On rejection, the buffer stays in plan mode and
-the agent is told to keep planning."
-  (if (not (and (boundp 'gptel-agent-harness--mode)
-                (eq gptel-agent-harness--mode 'plan)))
-      "Not in plan mode; PlanExit has no effect.  Continue as normal."
-    (let* ((plan (and (boundp 'gptel-agent-harness--plan-file)
-                      gptel-agent-harness--plan-file))
-           (plan-desc (if plan (abbreviate-file-name plan) "the plan file")))
-      (if (gptel-agent-harness-tools--plan-exit-approved-p
-           (format "Plan at %s is complete.  Switch to build agent and start implementing?"
-                   plan-desc))
-          (progn
-            ;; Queues the build-switch prompt into `--pending-prompts'.
-            (gptel-agent-harness-set-mode 'build)
-            ;; Append OpenCode's "execute the plan" message as a second
-            ;; user prompt, injected right after the build-switch prompt.
-            (setq gptel-agent-harness--pending-prompts
-                  (append gptel-agent-harness--pending-prompts
-                          (list (format
-                                 gptel-agent-harness-tools-plan-exit-approved-message
-                                 plan-desc))))
-            "User approved switching to build agent.  You are now in build mode; \
-proceed to execute the approved plan.")
-        "User rejected switching to build.  Remain in plan mode: keep planning \
-and refining the plan file, and do NOT edit any other files."))))
+(ert-deftest gptel-agent-harness-test-bash-empty-timeout-no-leading-blank ()
+  "A silent (no-output) timeout returns just the error, no leading blanks.
+This matches the Python harness `_timeout_message', which omits the
+`\\n\\n' separator when there is no output."
+  (let ((gptel-agent-harness-bash-timeout-silence 1)
+        (gptel-agent-harness-bash-timeout-max nil)
+        (gptel-agent-harness-bash-poll-interval 0.05)
+        (gptel-agent-harness-bash-kill-grace 1))
+    (let ((out (gptel-agent-harness-test--run-bash "sleep 30" 10)))
+      (should (equal out "Error: Bash command timed out (no output for 1s)."))
+      (should-not (string-prefix-p "\n" out)))))
 
-(defun gptel-agent-harness-tools--register-plan-exit ()
-  "Register the PlanExit tool with gptel."
-  (unless gptel-agent-harness-tools--plan-exit-tool
-    (setq gptel-agent-harness-tools--plan-exit-tool
-          (gptel-make-tool
-           :name "PlanExit"
-           :function #'gptel-agent-harness-tools--plan-exit
-           :description
-           "Use this tool when you have completed the planning phase and are
-ready to exit plan mode.
-
-This tool will ask the user whether they want to switch to the build
-agent and start implementing the plan.  Do NOT use the Question tool to
-ask \"Is this plan okay?\" — that is what this tool is for.
-
-Call this tool:
-- After you have written a complete plan to the plan file
-- After you have clarified any questions with the user
-- When you are confident the plan is ready for implementation
-
-Do NOT call this tool:
-- Before you have created or finalized the plan
-- If you still have unanswered questions about the implementation
-- If the user has indicated they want to continue planning
-
-On approval, the session switches to build mode (file edits become
-allowed) and you should proceed to execute the approved plan.  On
-rejection, you remain in the read-only plan phase and should continue
-refining the plan."
-           :args nil
-           :category "gptel-agent"
-           :confirm nil
-           :include t))))
-
-(defun gptel-agent-harness-tools--unregister-plan-exit ()
-  "Unregister the PlanExit tool from gptel."
-  (when gptel-agent-harness-tools--plan-exit-tool
-    (let* ((tool gptel-agent-harness-tools--plan-exit-tool)
-           (category (or (gptel-tool-category tool) "misc"))
-           (name (gptel-tool-name tool))
-           (cat-entry (assoc category gptel--known-tools #'equal)))
-      (when cat-entry
-        (setf (alist-get name (cdr cat-entry) nil 'remove #'equal) nil)
-        (unless (cdr cat-entry)
-          (setq gptel--known-tools
-                (assoc-delete-all category gptel--known-tools #'equal)))))
-    (setq gptel-agent-harness-tools--plan-exit-tool nil)))
-
-;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
-
-(defun gptel-agent-harness-tools-enable ()
-  "Override the glob, grep and bash tools; register extra tools.
-Overrides `gptel-agent--glob', `gptel-agent--grep' and
-`gptel-agent--execute-bash'.
-The Bash override adds a timeout and head+tail output truncation.
-Also register additional tools (Question, PlanExit).
-
-The overrides are installed as `:override' advice, so no copy of the
-original definition is needed: `advice-remove' in
-`gptel-agent-harness-tools-disable' restores it.  Both calls are
-idempotent — `advice-add' does not install the same function twice."
-  (when (fboundp 'gptel-agent--glob)
-    (advice-add 'gptel-agent--glob :override #'gptel-agent-harness-tools--glob))
-  (when (fboundp 'gptel-agent--grep)
-    (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep))
-  (when (fboundp 'gptel-agent--execute-bash)
-    (advice-add 'gptel-agent--execute-bash
-                :override #'gptel-agent-harness-tools--execute-bash))
-  (gptel-agent-harness-tools--register-question)
-  (gptel-agent-harness-tools--register-plan-exit))
-
-(defun gptel-agent-harness-tools-disable ()
-  "Restore original `gptel-agent--glob' and `gptel-agent--grep'.
-Also unregister additional tools (Question, PlanExit)."
-  (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
-  (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
-  (advice-remove 'gptel-agent--execute-bash
-                 #'gptel-agent-harness-tools--execute-bash)
-  (gptel-agent-harness-tools--unregister-question)
-  (gptel-agent-harness-tools--unregister-plan-exit))
-
-(provide 'gptel-agent-harness-tools)
+(provide 'gptel-agent-harness-test-tools)
 
 ;; Local Variables:
-;; package-lint-main-file: "gptel-agent-harness.el"
+;; package-lint-main-file: "tests/gptel-agent-harness-test.el"
 ;; End:
-;;; gptel-agent-harness-tools.el ends here
+;;; gptel-agent-harness-test-tools.el ends here
