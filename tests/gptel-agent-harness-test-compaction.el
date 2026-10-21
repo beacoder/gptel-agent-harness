@@ -244,6 +244,83 @@ Covers:
                 (should (string-match-p "\n\n---\n\n" (buffer-string)))))))
       (delete-file prompt-file))))
 
+(ert-deftest gptel-agent-harness-test-compact-buffer-region-success ()
+  "Test compact-buffer with a region replaces only the region."
+  (let ((prompt-file (make-temp-file "compact-" nil ".txt" "compact prompt"))
+        (captured-region nil))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+          (gptel-agent-harness-test--with-buffer buf
+            (with-current-buffer buf
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-harness--compacting-p nil)
+              (insert "before TARGET after")
+              (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                         (lambda (callback &optional _content region)
+                           (setq captured-region region)
+                           (when (functionp callback)
+                             (funcall callback nil)))))
+                (gptel-agent-harness-test--with-region "TARGET"
+                  (gptel-agent-harness-commands-compact-buffer))
+                (should (equal (buffer-substring-no-properties
+                                (marker-position (car captured-region))
+                                (marker-position (cdr captured-region)))
+                               "TARGET"))
+                (save-excursion
+                  (goto-char (marker-position (car captured-region)))
+                  (delete-region (car captured-region) (cdr captured-region))
+                  (insert "SUMMARY"))
+                (should (equal (buffer-string) "before SUMMARY after"))
+                (should-not gptel-agent-harness--compacting-p)))))
+      (delete-file prompt-file))))
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-region-sends-content ()
+  "Test region compaction sends the region text, not the whole buffer."
+  (let ((prompt-file (make-temp-file "compact-" nil ".txt" "compact prompt"))
+        (captured-content nil))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+          (gptel-agent-harness-test--with-buffer buf
+            (with-current-buffer buf
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-harness--compacting-p nil)
+              (insert "before TARGET after")
+              (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                         (lambda (callback &optional content _region)
+                           (setq captured-content content)
+                           (when (functionp callback)
+                             (funcall callback nil)))))
+                (gptel-agent-harness-test--with-region "TARGET"
+                  (gptel-agent-harness-commands-compact-buffer))
+                (should (equal captured-content "TARGET"))
+                (should (equal (buffer-string) "before TARGET after"))
+                (should-not gptel-agent-harness--compacting-p)
+                (should-not mark-active)))))
+      (delete-file prompt-file))))
+
+(ert-deftest gptel-agent-harness-test-commands-compact-region-callback ()
+  "Test the compact callback replaces only the region when given one."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-mode t)
+      (insert "before TARGET after")
+      (save-excursion
+        (goto-char (point-min))
+        (search-forward "TARGET")
+        (let ((start (match-beginning 0))
+              (end (match-end 0)))
+          (let ((info (list :buffer buf
+                            :region (cons (copy-marker start t)
+                                          (copy-marker end t)))))
+            (gptel-agent-harness-commands--compact-callback "SUMMARY" info)
+            (should (equal (buffer-string) "before SUMMARY\n after"))
+            (should-not (plist-get info :error))))
+      (erase-buffer)
+      (insert "old content")
+      (let ((info (list :buffer buf)))
+        (gptel-agent-harness-commands--compact-callback "new summary" info)
+        (should (equal (buffer-string) "new summary\n")))))))
+
 ;;;; Commands Module Compact Tests
 
 (ert-deftest gptel-agent-harness-test-commands-compact-callback ()

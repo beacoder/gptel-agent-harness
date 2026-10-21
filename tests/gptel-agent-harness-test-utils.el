@@ -175,6 +175,25 @@ top-level-p) see them."
     (when proj-dir
       (setq-local gptel-agent-harness--project-dir proj-dir))))
 
+(defmacro gptel-agent-harness-test--with-region (text &rest body)
+  "Activate a region around the first occurrence of TEXT and execute BODY.
+TEXT is searched forward from point-min; the region covers the match.
+The mark is activated with `transient-mark-mode' enabled so
+`region-active-p' returns non-nil.  The mark is deactivated after BODY."
+  (declare (indent 1) (debug (form body)))
+  `(let ((transient-mark-mode t))
+     (save-excursion
+       (goto-char (point-min))
+       (search-forward ,text)
+       (let ((start (match-beginning 0))
+             (end (match-end 0)))
+         (push-mark start t nil)
+         (setq-local mark-active t)
+         (goto-char end)
+         (unwind-protect
+             (progn ,@body)
+           (pop-mark))))))
+
 ;; Declared special so `let' bindings are dynamic (completion frameworks
 ;; check these with `bound-and-true-p'; see
 ;; `gptel-agent-harness--preview-candidate-at-point').  The `boundp'

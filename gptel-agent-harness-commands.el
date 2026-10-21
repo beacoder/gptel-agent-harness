@@ -82,9 +82,15 @@ reports the error.  INFO is the request info plist."
      ;; Success — resp is a string
      ((stringp resp)
       (with-current-buffer buf
-        ;; Erase all buffer content and insert the compacted summary
-        (let ((inhibit-read-only t))
-          (erase-buffer)
+        ;; Erase the buffer (or just the compacted region) and insert
+        ;; the compacted summary.
+        (let ((inhibit-read-only t)
+              (region (plist-get info :region)))
+          (if (and region
+                   (marker-buffer (car region))
+                   (marker-buffer (cdr region)))
+              (delete-region (car region) (cdr region))
+            (erase-buffer))
           (insert resp)
           (unless (eq (char-before) ?\n) (insert "\n")))
         (gptel--update-status " Ready" 'success))
@@ -112,20 +118,25 @@ reports the error.  INFO is the request info plist."
 
 (declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness-compact")
 
-(defun gptel-agent-harness-commands-compact (&optional post-func)
+(defun gptel-agent-harness-commands-compact (&optional post-func content region)
   "Compact the current buffer contents using the LLM.
 
-Sends the entire buffer content as a user message to the LLM with the
-compact system prompt.  On success, erases the buffer and replaces it
-with the compacted summary.
+Sends the buffer content (or CONTENT, if given) as a user message to
+the LLM with the compact system prompt.  On success, erases the buffer
+\(or just the REGION, if given) and replaces it with the compacted
+summary.
 
 POST-FUNC, if provided, is called with the INFO plist after the
 compaction completes (success or failure).  Check (plist-get info :error)
 to determine if compaction succeeded.
 
+CONTENT, if non-nil, is sent to the LLM instead of the whole buffer.
+REGION, a (START . END) marker pair, restricts the buffer replacement
+to that region on success.
+
 This function does NOT modify the buffer before sending — it sends
-whatever is currently in the buffer as-is.  The caller is responsible
-for preparing the buffer content (e.g., stripping headers).
+whatever CONTENT (or the buffer) holds as-is.  The caller is
+responsible for preparing the content (e.g., stripping headers).
 
 Returns the FSM object for the compaction request."
   (unless (bound-and-true-p gptel-mode)
@@ -138,8 +149,8 @@ Returns the FSM object for the compaction request."
          (gptel-include-reasoning nil)
          (gptel-use-tools nil)
          (gptel-use-context nil)
-         ;; Send entire buffer content as the prompt
-         (content (buffer-substring-no-properties (point-min) (point-max)))
+         (content (or content
+                      (buffer-substring-no-properties (point-min) (point-max))))
          (fsm (gptel-request content
                 :system compact-prompt
                 :stream nil
@@ -149,6 +160,7 @@ Returns the FSM object for the compaction request."
                 :callback #'gptel-agent-harness-commands--compact-callback)))
     (when (functionp post-func)
       (let ((info (gptel-fsm-info fsm)))
+        (when region (plist-put info :region region))
         (plist-put info :post (cons post-func (plist-get info :post)))))
     fsm))
 
@@ -261,11 +273,17 @@ Returns a list of non-empty user prompt strings, oldest first."
 (defun gptel-agent-harness-commands-compact-buffer ()
   "Manually compact the current gptel buffer.
 
-Strips the compaction frame (header/separator), sends the buffer
-to the LLM for summarization, and rebuilds the buffer with the
-standard header/separator structure.  All user prompts (excluding
-nudges and mode-switch messages) are restored after the summary
-frame, so the model retains the original requests.
+With an active region, compact only the region: the region text is
+sent to the LLM and replaced in place by the summary, leaving the
+rest of the buffer untouched.  No compaction frame or user-prompt
+restoration is done in region mode.
+
+Without an active region, strips the compaction frame
+\(header/separator), sends the buffer to the LLM for summarization,
+and rebuilds the buffer with the standard header/separator
+structure.  All user prompts (excluding nudges and mode-switch
+messages) are restored after the summary frame, so the model
+retains the original requests.
 
 Use this when context is getting large and you want to compact
 without waiting for the automatic trigger."
@@ -274,36 +292,56 @@ without waiting for the automatic trigger."
     (user-error "Not in a gptel buffer"))
   (when (bound-and-true-p gptel-agent-harness--compacting-p)
     (user-error "Compaction already in progress"))
-  ;; Extract user prompts BEFORE stripping frame (frame text is excluded
-  ;; by the header-prefix check, so order doesn't matter, but doing it
-  ;; before strip ensures we see the full buffer).
-  (let ((prompts (gptel-agent-harness-commands--buffer-user-prompts)))
-    (setq-local gptel-agent-harness--compacting-p t)
-    ;; Strip header and separator, leaving old summary as plain text.
-    (gptel-agent-harness--strip-compact-prefix)
-    ;; Set compact prompt and send.
-    (setq-local gptel-agent-compact-prompt
-                (gptel-agent-harness--read-compact-prompt))
-    (let ((buf (current-buffer))
-          (resume-prompts prompts))
-      (gptel-agent-harness-commands-compact
-       (lambda (&optional info)
-         (when (buffer-live-p buf)
-           (with-current-buffer buf
-             (kill-local-variable 'gptel-agent-compact-prompt)
-             (setq gptel-agent-harness--compacting-p nil)
-             ;; Reset nudge count so the post-compaction conversation starts
-             ;; with a fresh nudge budget, matching the automatic path.
-             (setq gptel-agent-harness--nudge-count 0)
-             (if (and info (plist-get info :error))
-                 (message "Manual compaction failed: %s"
-                          (plist-get info :error))
-               ;; Success: add header + separator + restored user prompts.
-               (gptel-agent-harness--insert-compact-frame)
-               (goto-char (point-max))
-               (dolist (prompt resume-prompts)
-                 (insert prompt "\n\n"))
-               (message "Buffer compacted successfully.")))))))))
+  (if (region-active-p)
+      (let ((start (region-beginning))
+            (end (region-end)))
+        (deactivate-mark)
+        (setq-local gptel-agent-harness--compacting-p t)
+        (let ((buf (current-buffer))
+              (content (buffer-substring-no-properties start end))
+              (region (cons (copy-marker start t) (copy-marker end t))))
+          (gptel-agent-harness-commands-compact
+           (lambda (&optional info)
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (kill-local-variable 'gptel-agent-compact-prompt)
+                 (setq gptel-agent-harness--compacting-p nil)
+                 (if (and info (plist-get info :error))
+                     (message "Region compaction failed: %s"
+                              (plist-get info :error))
+                   (message "Region compacted successfully.")))))
+           content
+           region)))
+    ;; Extract user prompts BEFORE stripping frame (frame text is excluded
+    ;; by the header-prefix check, so order doesn't matter, but doing it
+    ;; before strip ensures we see the full buffer).
+    (let ((prompts (gptel-agent-harness-commands--buffer-user-prompts)))
+      (setq-local gptel-agent-harness--compacting-p t)
+      ;; Strip header and separator, leaving old summary as plain text.
+      (gptel-agent-harness--strip-compact-prefix)
+      ;; Set compact prompt and send.
+      (setq-local gptel-agent-compact-prompt
+                  (gptel-agent-harness--read-compact-prompt))
+      (let ((buf (current-buffer))
+            (resume-prompts prompts))
+        (gptel-agent-harness-commands-compact
+         (lambda (&optional info)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (kill-local-variable 'gptel-agent-compact-prompt)
+               (setq gptel-agent-harness--compacting-p nil)
+               ;; Reset nudge count so the post-compaction conversation starts
+               ;; with a fresh nudge budget, matching the automatic path.
+               (setq gptel-agent-harness--nudge-count 0)
+               (if (and info (plist-get info :error))
+                   (message "Manual compaction failed: %s"
+                            (plist-get info :error))
+                 ;; Success: add header + separator + restored user prompts.
+                 (gptel-agent-harness--insert-compact-frame)
+                 (goto-char (point-max))
+                 (dolist (prompt resume-prompts)
+                   (insert prompt "\n\n"))
+                 (message "Buffer compacted successfully."))))))))))
 
 (defconst gptel-agent-harness-commands--summary-prompt-file
   (expand-file-name
