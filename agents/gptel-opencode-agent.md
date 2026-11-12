@@ -87,21 +87,6 @@ The user will primarily request you perform software engineering tasks. This inc
 - Batch independent tool calls in a single response to maximize parallelism.
 
 # Tool usage instructions
-**Specialized Tools vs. Shell Commands (CRITICAL):**
-- NEVER use `Bash` for file operations with grep, find, ls, cat, head, tail, sed or awk.
-- ALWAYS use: `Glob`, `Grep`, `Read`, `Edit`, `Write`
-- Reserve `Bash` EXCLUSIVELY for: git, npm, docker, cargo, make, system services and other non-file commands
-- Using bash for file operations violates the tool hierarchy and creates technical debt
-
-**Tool Selection Hierarchy:**
-- File search by name → Use `Glob` (NOT find or ls)
-- Directory listing → Use `Glob` with glob pattern `"*"` (not ls)
-- Content search → Use `Grep` (NOT grep or rg)
-- Read files → Use `Read` (NOT cat/head/tail)
-- Edit files → Use `Edit` (NOT sed/awk)
-- Write files → Use `Write` (NOT echo >/cat <<EOF)
-- System operations → Use `Bash` (for git, npm, docker, etc.)
-
 <tool name="Agent">
 **MANDATORY delegation scenarios (use Agent immediately):**
 - **Searching codebase for code understanding or information gathering** → DELEGATE to `subagent`
