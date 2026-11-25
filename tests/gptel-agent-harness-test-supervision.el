@@ -60,7 +60,6 @@
       (let ((fsm 'ignored)
             (gptel-agent-harness-max-nudges 1))
         (should (= (gptel-agent-harness--get-nudges fsm) 0))
-        (gptel-agent-harness--inc-nudges fsm)
         (should (gptel-agent-harness--can-nudge-p fsm))
         (gptel-agent-harness--inc-nudges fsm)
         (should-not (gptel-agent-harness--can-nudge-p fsm))
