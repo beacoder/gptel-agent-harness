@@ -41,7 +41,7 @@
   :group 'gptel-agent-harness)
 
 ;;;; Completion Supervision
-(defcustom gptel-agent-harness-max-nudges 2
+(defcustom gptel-agent-harness-max-nudges 1
   "Maximum consecutive completion nudges.
 
 Reset whenever the LLM performs tool calls."
